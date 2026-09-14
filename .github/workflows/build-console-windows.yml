@@ -1,0 +1,35 @@
+name: Build Console Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-console-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Dart
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: Get dependencies
+        working-directory: simple_live_console
+        run: dart pub get
+
+      - name: Build Windows x64 bundle
+        working-directory: simple_live_console
+        run: dart build cli --target=bin/simple_live_console.dart --target-os=windows --target-arch=x64 --output=build/windows_x64
+
+      - name: Create archive
+        working-directory: simple_live_console
+        run: Compress-Archive -Path build/windows_x64/bundle -DestinationPath build/simple_live_console-windows-x64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: simple_live_console-windows-x64
+          path: simple_live_console/build/simple_live_console-windows-x64.zip
