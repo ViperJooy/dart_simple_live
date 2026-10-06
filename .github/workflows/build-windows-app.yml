@@ -5,7 +5,9 @@ on:
 
 jobs:
   build-windows-app:
-    runs-on: windows-latest
+    # 固定 windows-2022：windows-latest 已升级 VS18/MSVC 14.51，
+    # flutter_inappwebview_windows 等插件使用的 <experimental/coroutine> 会直接编译报错
+    runs-on: windows-2022
 
     steps:
       # 签出触发分支的代码
