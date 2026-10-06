@@ -1,0 +1,43 @@
+name: Build Windows App
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows-app:
+    runs-on: windows-latest
+
+    steps:
+      # 签出触发分支的代码
+      - uses: actions/checkout@v4
+
+      # 设置Flutter环境
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.38.x"
+          cache: true
+
+      - name: Enable Flutter Desktop
+        run: flutter config --enable-windows-desktop
+
+      - name: Restore Packages
+        working-directory: simple_live_app
+        run: flutter pub get
+
+      # 构建 Windows Release
+      - name: Build Windows
+        working-directory: simple_live_app
+        run: flutter build windows --release
+
+      # 压缩产物
+      - name: Create archive
+        working-directory: simple_live_app
+        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath build/simple_live_app-windows-x64.zip
+
+      # 上传至 Artifacts
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: simple_live_app-windows-x64
+          path: simple_live_app/build/simple_live_app-windows-x64.zip

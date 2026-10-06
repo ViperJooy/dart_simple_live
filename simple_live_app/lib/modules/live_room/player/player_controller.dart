@@ -842,6 +842,14 @@ class PlayerController extends BaseController
     disposeStream();
     disposeDanmakuController();
     await resetSystem();
+    // 先停止播放并等待 mpv 渲染线程空闲，再释放播放器。
+    // 否则 Windows 上 dispose 注销纹理时会与仍在渲染的 mpv 线程竞争，
+    // 导致 flutter_windows.dll 访问冲突（0xc0000005）闪退
+    try {
+      await player.stop();
+    } catch (e) {
+      Log.logPrint(e);
+    }
     await player.dispose();
     super.onClose();
   }
