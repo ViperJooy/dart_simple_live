@@ -102,6 +102,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 播放恢复监听（用于重置断流重试计数）
   StreamSubscription? _playingRetrySubscription;
 
+  /// 缓冲状态监听与看门狗定时器
+  StreamSubscription? _bufferingSubscription;
+  Timer? _bufferingWatchdog;
+
   /// 直播间加载失败
   var loadError = false.obs;
   Error? error;
@@ -127,6 +131,23 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     _playingRetrySubscription = player.stream.playing.listen((playing) {
       if (playing) {
         mediaErrorRetryCount = 0;
+      }
+    });
+
+    //缓冲看门狗：CDN 掐断连接时播放器可能收不到 EOF 而永久卡在缓冲状态，
+    //缓冲持续超过10秒则主动重新获取播放地址恢复播放
+    _bufferingSubscription = player.stream.buffering.listen((buffering) {
+      _bufferingWatchdog?.cancel();
+      if (buffering) {
+        _bufferingWatchdog = Timer.periodic(const Duration(seconds: 10), (_) {
+          if (liveStatus.value &&
+              detail.value != null &&
+              qualites.isNotEmpty &&
+              !_refreshingPlayUrls) {
+            Log.d("缓冲超时，重新获取播放地址");
+            refreshPlayUrls();
+          }
+        });
       }
     });
 
@@ -426,10 +447,17 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     setPlayer();
   }
 
+  /// 是否正在刷新播放地址（避免断流重试与缓冲看门狗并发刷新）
+  var _refreshingPlayUrls = false;
+
   /// 重新请求播放地址并刷新播放
   /// 部分平台（如斗鱼）的流地址带时效签名，到期后 CDN 会主动断开连接，
   /// 此时重放旧地址会立刻失败，必须重新获取新签名的地址
   Future<bool> refreshPlayUrls() async {
+    if (_refreshingPlayUrls) {
+      return false;
+    }
+    _refreshingPlayUrls = true;
     try {
       var playUrl = await site.liveSite.getPlayUrls(
         detail: detail.value!,
@@ -448,6 +476,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     } catch (e) {
       Log.logPrint(e);
       return false;
+    } finally {
+      _refreshingPlayUrls = false;
     }
   }
 
@@ -1096,6 +1126,8 @@ ${error?.stackTrace}''');
     scrollController.removeListener(scrollListener);
     autoExitTimer?.cancel();
     _playingRetrySubscription?.cancel();
+    _bufferingSubscription?.cancel();
+    _bufferingWatchdog?.cancel();
 
     liveDanmaku.stop();
     danmakuController = null;
