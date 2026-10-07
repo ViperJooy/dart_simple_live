@@ -76,6 +76,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 双击退出Timer
   Timer? doubleClickTimer;
 
+  /// 播放恢复监听（用于重置断流重试计数）
+  StreamSubscription? _playingRetrySubscription;
+
   @override
   void onInit() {
     initTimer();
@@ -83,6 +86,13 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     followed.value = DBService.instance.getFollowExist("${site.id}_$roomId");
 
     loadData();
+
+    //播放成功恢复后，重置重试计数，保证长时间观看时每次断流都有完整的重试次数
+    _playingRetrySubscription = player.stream.playing.listen((playing) {
+      if (playing) {
+        mediaErrorRetryCount = 0;
+      }
+    });
 
     super.onInit();
   }
@@ -227,6 +237,31 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     setPlayer();
   }
 
+  /// 重新请求播放地址并刷新播放
+  /// 部分平台（如斗鱼）的流地址带时效签名，到期后 CDN 会主动断开连接，
+  /// 此时重放旧地址会立刻失败，必须重新获取新签名的地址
+  Future<bool> refreshPlayUrls() async {
+    try {
+      var playUrl = await site.liveSite.getPlayUrls(
+        detail: detail.value!,
+        quality: qualites[currentQuality],
+      );
+      if (playUrl.urls.isEmpty) {
+        return false;
+      }
+      playUrls.value = playUrl.urls;
+      playHeaders = playUrl.headers;
+      if (currentLineIndex >= playUrls.length) {
+        currentLineIndex = playUrls.length - 1;
+      }
+      setPlayer();
+      return true;
+    } catch (e) {
+      Log.logPrint(e);
+      return false;
+    }
+  }
+
   void setPlayer() async {
     currentLineInfo.value = "线路${currentLineIndex + 1}";
     errorMsg.value = "";
@@ -251,8 +286,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         await Future.delayed(const Duration(seconds: 1));
       }
       mediaErrorRetryCount += 1;
-      //刷新一次
-      setPlayer();
+      //重新获取播放地址（流地址可能已过期），失败则重放当前地址
+      if (!await refreshPlayUrls()) {
+        setPlayer();
+      }
       return;
     }
 
@@ -277,8 +314,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         await Future.delayed(const Duration(seconds: 1));
       }
       mediaErrorRetryCount += 1;
-      //刷新一次
-      setPlayer();
+      //重新获取播放地址（流地址可能已过期），失败则重放当前地址
+      if (!await refreshPlayUrls()) {
+        setPlayer();
+      }
       return;
     }
 
@@ -439,6 +478,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   @override
   void onClose() {
+    _playingRetrySubscription?.cancel();
     liveDanmaku.stop();
 
     danmakuController = null;
