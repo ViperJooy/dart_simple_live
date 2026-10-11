@@ -69,6 +69,37 @@ void main() {
     });
   });
 
+  group('子窗口关闭时回收播放器', () {
+    test('teardown 幂等，且 stop 排在 dispose 之前', () {
+      final source = File(
+        'lib/modules/live_room/player/player_controller.dart',
+      ).readAsStringSync();
+      expect(source, contains('Future<void> teardown()'));
+      expect(source, contains('_tornDown'));
+      final stop = source.indexOf('await player.stop()');
+      final dispose = source.indexOf('await player.dispose()');
+      expect(stop, greaterThan(-1));
+      expect(dispose, greaterThan(-1));
+      // stop 必须排在 dispose 之前，否则 Windows 上 0xc0000005 闪退
+      expect(stop, lessThan(dispose));
+    });
+
+    test('子窗口拦截窗口关闭，先回收再关窗', () {
+      final source = File(
+        'lib/app/multi_window/child_live_room_app.dart',
+      ).readAsStringSync();
+      expect(source, contains('WindowListener'));
+      expect(source, contains('onWindowClose'));
+      expect(source, contains('setPreventClose(true)'));
+      final teardown = source.indexOf('.teardown()');
+      final close = source.indexOf('windowManager.close()');
+      expect(teardown, greaterThan(-1));
+      expect(close, greaterThan(-1));
+      // 先回收播放器再关窗，否则 engine 销毁时 mpv 线程与纹理注销竞争会闪退
+      expect(teardown, lessThan(close));
+    });
+  });
+
   group('子窗口不终止整个进程', () {
     test('live_room_controller 不再直接调用 dart:io 的 exit', () {
       final source = File(
