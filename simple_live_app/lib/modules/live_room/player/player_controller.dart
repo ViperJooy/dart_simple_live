@@ -833,8 +833,15 @@ class PlayerController extends BaseController
     );
   }
 
-  @override
-  void onClose() async {
+  bool _tornDown = false;
+
+  /// 回收播放器与系统资源
+  ///
+  /// 幂等：子窗口关闭时由 WindowListener 显式调用，GetX 的 onClose 随后也会触发，
+  /// 两者都会走到这里，必须避免重复 dispose。
+  Future<void> teardown() async {
+    if (_tornDown) return;
+    _tornDown = true;
     Log.w("播放器关闭");
     if (smallWindowState.value) {
       exitSmallWindow();
@@ -851,6 +858,11 @@ class PlayerController extends BaseController
       Log.logPrint(e);
     }
     await player.dispose();
+  }
+
+  @override
+  void onClose() async {
+    await teardown();
     super.onClose();
   }
 }

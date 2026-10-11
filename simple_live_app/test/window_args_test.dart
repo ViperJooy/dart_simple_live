@@ -68,4 +68,21 @@ void main() {
       expect(isMultiWindowPlatform, Platform.isWindows || Platform.isMacOS);
     });
   });
+
+  group('子窗口服务栈', () {
+    test('initChildServices 的实现不注册 SyncService', () {
+      final source = File(
+        'lib/app/multi_window/child_live_room_app.dart',
+      ).readAsStringSync();
+      expect(source, contains('initChildServices'));
+      // SyncService.onInit 会无条件绑定 UDP 23235 与 HTTP 23234，
+      // 第二个窗口必然 SocketException，子窗口不得初始化它。
+      // 注释里提到 SyncService 是允许的，注册代码里出现不允许。
+      final withoutComments = source
+          .split('\n')
+          .where((line) => !line.trimLeft().startsWith('//'))
+          .join('\n');
+      expect(withoutComments.contains('SyncService'), isFalse);
+    });
+  });
 }
