@@ -69,6 +69,34 @@ void main() {
     });
   });
 
+  group('子窗口不终止整个进程', () {
+    test('live_room_controller 不再直接调用 dart:io 的 exit', () {
+      final source = File(
+        'lib/modules/live_room/live_room_controller.dart',
+      ).readAsStringSync();
+      // exit(0) 解析到 dart:io 的 exit，多开下任一子窗口定时器到期会杀掉全进程
+      final withoutComments = source
+          .split('\n')
+          .where((line) => !line.trimLeft().startsWith('//'))
+          .join('\n');
+      expect(withoutComments.contains('exit(0)'), isFalse);
+      expect(source, contains('closeSelf()'));
+    });
+  });
+
+  group('音量按窗口隔离', () {
+    test('子窗口音量不写回全局设置', () {
+      final source = File(
+        'lib/modules/live_room/player/player_controller.dart',
+      ).readAsStringSync();
+      expect(source, contains('isIndependentVolume'));
+      expect(source, contains('currentVolume'));
+      // 持久化必须被 isIndependentVolume 守卫，否则子窗口 A 调音量会
+      // 连带改掉主窗口与子窗口 B 的音量，并落盘影响下次启动
+      expect(source, contains('if (!isIndependentVolume)'));
+    });
+  });
+
   group('toLiveRoomDetail 平台隔离', () {
     test('桌面端分支被平台判定包住，移动端路径保留', () {
       final source =

@@ -186,7 +186,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       if (countdown.value <= 0) {
         timer = Timer(const Duration(seconds: 10), () async {
           await WakelockPlus.disable();
-          exit(0);
+          await closeSelf();
         });
         autoExitTimer?.cancel();
         var delay = await Utils.showAlertDialog("定时关闭已到时,是否延迟关闭?",
@@ -199,7 +199,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         } else {
           delayAutoExit.value = false;
           await WakelockPlus.disable();
-          exit(0);
+          await closeSelf();
         }
       }
     });
@@ -708,10 +708,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
               child: Slider(
                 min: 0,
                 max: 100,
-                value: AppSettingsController.instance.playerVolume.value,
+                value: currentVolume.value,
                 onChanged: (newValue) {
-                  player.setVolume(newValue);
-                  AppSettingsController.instance.setPlayerVolume(newValue);
+                  setVolume(newValue);
                 },
               ),
             ),

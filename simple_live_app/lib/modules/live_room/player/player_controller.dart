@@ -18,6 +18,8 @@ import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/controller/base_controller.dart';
 import 'package:simple_live_app/app/custom_throttle.dart';
 import 'package:simple_live_app/app/log.dart';
+import 'package:simple_live_app/app/multi_window/multi_window_service.dart';
+import 'package:simple_live_app/app/multi_window/window_args.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:window_manager/window_manager.dart';
@@ -34,6 +36,24 @@ mixin PlayerMixin {
           ? MPVLogLevel.info
           : MPVLogLevel.error,
     ),
+  );
+
+  /// 本窗口是否隔离音量
+  ///
+  /// 子窗口为 true：音量只存内存，不写全局 LocalStorage，关闭即丢失，
+  /// 避免多开时各窗口互相覆盖全局音量。
+  /// 主窗口与全部移动端为 false：沿用既有读写全局设置的路径。
+  bool get isIndependentVolume =>
+      isMultiWindowPlatform && _isChildWindow;
+
+  bool get _isChildWindow {
+    if (!Get.isRegistered<MultiWindowService>()) return false;
+    return Get.find<MultiWindowService>().isChildWindow;
+  }
+
+  /// 当前窗口的播放器音量
+  late final RxDouble currentVolume = RxDouble(
+    AppSettingsController.instance.playerVolume.value,
   );
 
   /// 初始化播放器并设置 ao 参数
@@ -664,7 +684,8 @@ class PlayerController extends BaseController
     initSystem();
     initStream();
     //设置音量
-    player.setVolume(AppSettingsController.instance.playerVolume.value);
+    // 子窗口用独立的内存音量，主窗口沿用全局设置
+    player.setVolume(currentVolume.value);
     super.onInit();
   }
 
@@ -831,6 +852,28 @@ class PlayerController extends BaseController
         ],
       ),
     );
+  }
+
+  /// 设置播放器音量
+  ///
+  /// 子窗口只改内存值，避免多开时各窗口互相覆盖全局设置。
+  void setVolume(double value) {
+    currentVolume.value = value;
+    player.setVolume(value);
+    if (!isIndependentVolume) {
+      AppSettingsController.instance.setPlayerVolume(value);
+    }
+  }
+
+  /// 关闭当前播放窗口
+  ///
+  /// 子窗口只关自己；主窗口与移动端保持原有 dart:io exit(0) 行为。
+  Future<void> closeSelf() async {
+    if (_isChildWindow) {
+      await Get.find<MultiWindowService>().closeSelf();
+      return;
+    }
+    exit(0);
   }
 
   bool _tornDown = false;
