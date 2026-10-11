@@ -56,12 +56,21 @@ class MultiWindowService extends GetxService {
     }
   }
 
-  /// 子窗口首帧后设置自己的窗口属性并显示
+  /// 子窗口设置自己的窗口属性并显示
   ///
   /// WindowConfiguration 没有尺寸字段，只能由子窗口自行设置。
+  ///
+  /// 必须等原生视图挂到 NSWindow 之后再调用 window_manager：它的 macOS 实现
+  /// 用 `registrar.view?.window!` 强解包，视图未就绪时会 nil 解包崩溃
+  /// （SIGTRAP，Unexpectedly found nil）。
+  /// Dart 首帧并不代表原生视图已挂载，所以这里轮询重试。
   Future<void> setupSelfWindow() async {
     if (!isChildWindow) return;
     try {
+      if (!await _waitForNativeView()) {
+        Log.logPrint('子窗口视图未就绪，跳过窗口设置');
+        return;
+      }
       final size =
           _childWindowSize[windowArgs.siteId] ?? _defaultChildWindowSize;
       await windowManager.setSize(size);
@@ -74,6 +83,25 @@ class MultiWindowService extends GetxService {
     } catch (e) {
       Log.logPrint('子窗口初始化失败: $e');
     }
+  }
+
+  /// 轮询等待 window_manager 能够解析到原生窗口
+  ///
+  /// window_manager 的 macOS 实现在视图未挂载时 `registrar.view?.window!`
+  /// 会崩溃，无法用 try/catch 捕获，只能靠成功调用来探测就绪状态。
+  /// isFocused() 是副作用最小的探测方式。
+  Future<bool> _waitForNativeView() async {
+    const maxAttempts = 40;
+    const interval = Duration(milliseconds: 100);
+    for (var i = 0; i < maxAttempts; i++) {
+      try {
+        await windowManager.isFocused();
+        return true;
+      } catch (e) {
+        await Future.delayed(interval);
+      }
+    }
+    return false;
   }
 
   /// 注册本窗口的方法处理器，供其他窗口通过 WindowController 扩展调用

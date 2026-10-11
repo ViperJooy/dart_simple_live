@@ -62,6 +62,7 @@ class ChildLiveRoomApp extends StatefulWidget {
 class _ChildLiveRoomAppState extends State<ChildLiveRoomApp>
     with WindowListener {
   bool _closing = false;
+  bool _controllerReady = false;
 
   @override
   void initState() {
@@ -69,6 +70,28 @@ class _ChildLiveRoomAppState extends State<ChildLiveRoomApp>
     windowManager.addListener(this);
     // 拦截关闭，先回收播放器再真正关窗
     windowManager.setPreventClose(true);
+    // LiveRoomController 在首帧后由 main.dart 创建，这里等它就位后再挂页面
+    _waitForController();
+  }
+
+  /// 等待 LiveRoomController 注册完成后再构建播放页
+  ///
+  /// 控制器必须在 FlutterSmartDialog.init 的 builder 跑过之后才能创建，
+  /// 否则它 onInit 里的 SmartDialog.showLoading 会触发
+  /// LateInitializationError(loadingWidget)，表现为加载失败需手动刷新。
+  void _waitForController() {
+    if (Get.isRegistered<LiveRoomController>()) {
+      _controllerReady = true;
+      return;
+    }
+    Future.delayed(const Duration(milliseconds: 16), () {
+      if (!mounted) return;
+      if (Get.isRegistered<LiveRoomController>()) {
+        setState(() => _controllerReady = true);
+        return;
+      }
+      _waitForController();
+    });
   }
 
   @override
@@ -104,7 +127,12 @@ class _ChildLiveRoomAppState extends State<ChildLiveRoomApp>
       themeMode:
           ThemeMode.values[Get.find<AppSettingsController>().themeMode.value],
       getPages: AppPages.routes,
-      home: const LiveRoomPage(),
+      home: _controllerReady
+          ? const LiveRoomPage()
+          // 控制器尚未就绪时的占位页
+          : const Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            ),
       locale: const Locale("zh", "CN"),
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,

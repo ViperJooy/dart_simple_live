@@ -368,7 +368,14 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       loadError.value = true;
       error = e as Error;
     } finally {
-      SmartDialog.dismiss(status: SmartStatus.loading);
+      // 若 showLoading 未真正生效（例如子窗口里 FlutterSmartDialog 尚未初始化），
+      // dismiss 会访问未赋值的 late 字段 loadingWidget 而抛异常。
+      // 此时本就没有 loading 需要关闭，忽略即可。
+      try {
+        SmartDialog.dismiss(status: SmartStatus.loading);
+      } catch (e) {
+        Log.logPrint(e);
+      }
     }
   }
 

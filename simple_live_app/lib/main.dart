@@ -89,16 +89,28 @@ Future<void> runChildWindow() async {
   MediaKit.ensureInitialized();
   await Hive.initFlutter((await getApplicationSupportDirectory()).path);
   await initChildServices();
+  await windowManager.ensureInitialized();
   await service.registerChildWindowHandler();
-
-  Get.put<LiveRoomController>(LiveRoomController(
-    pSite: Sites.allSites[windowArgs.siteId]!,
-    pRoomId: windowArgs.roomId,
-  ));
 
   runApp(const ChildLiveRoomApp());
 
-  // 首帧后再设置窗口属性与显示
+  // LiveRoomController 的 onInit 会同步调用 loadData()，里面用了
+  // SmartDialog.showLoading。它依赖 FlutterSmartDialog.init 的 builder 跑过之后
+  // DialogProxy.initialize() 才会初始化 loadingWidget（late 字段）。
+  // 若在 runApp 之前 Get.put，首次 showLoading 就会抛
+  // LateInitializationError: Field 'loadingWidget' has not been initialized，
+  // 表现为「直播间加载失败」，必须手动刷新才恢复。
+  // 所以把控制器推迟到 childApp 的首帧之后再创建，
+  // 由 ChildLiveRoomApp 内部的占位页等待并重建。
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    Get.put<LiveRoomController>(LiveRoomController(
+      pSite: Sites.allSites[windowArgs.siteId]!,
+      pRoomId: windowArgs.roomId,
+    ));
+  });
+
+  // 等原生视图挂到窗口后再设置窗口属性并显示。
+  // Dart 首帧不代表 NSWindow 已就绪，过早调用 window_manager 会 nil 解包崩溃。
   WidgetsBinding.instance.addPostFrameCallback((_) async {
     await service.setupSelfWindow();
   });
