@@ -156,4 +156,62 @@ void main() {
       expect(withoutComments.contains('SyncService'), isFalse);
     });
   });
+
+  group('断流重试串行化', () {
+    String readController() =>
+        File('lib/modules/live_room/live_room_controller.dart').readAsStringSync();
+
+    test('刷新播放地址有互斥保护，且不会在 open 完成前解锁', () {
+      final source = readController();
+      // player.open 是异步的，若在 finally 里立刻解锁 _refreshingPlayUrls，
+      // mediaEnd/mediaError/缓冲看门狗三个触发源会并发拉流并各自 open，
+      // 把 mpv playlist 状态搅乱，表现为播放几分钟后卡死且不报错。
+      expect(source, contains('_refreshingPlayUrls'));
+      // 解锁必须发生在确认 open 完成之后，而不是 open 调用之前的 finally。
+      // initPlaylist 内部 await player.open，所以 await initPlaylist() 必须
+      // 排在解锁之前，且必须是 await（不 await 就等于没等）。
+      final refreshIdx = source.indexOf('Future<bool> refreshPlayUrls()');
+      expect(refreshIdx, greaterThan(-1));
+      final body = source.substring(refreshIdx, refreshIdx + 2000);
+      final awaitInit = body.indexOf('await initPlaylist()');
+      final unlock = body.indexOf('_refreshingPlayUrls = false');
+      expect(awaitInit, greaterThan(-1));
+      expect(unlock, greaterThan(-1));
+      // await initPlaylist 必须排在解锁之前
+      expect(awaitInit, lessThan(unlock));
+
+      // initPlaylist 本身必须真的 await player.open，否则等待没有意义
+      final initIdx = source.indexOf('Future<void> initPlaylist()');
+      expect(initIdx, greaterThan(-1));
+      final initBody = source.substring(initIdx, initIdx + 1500);
+      expect(initBody, contains('await player.open'));
+    });
+
+    test('所有断流触发源都经过同一个串行化入口', () {
+      final source = readController();
+      // mediaEnd / mediaError / 缓冲看门狗 三个来源必须汇聚到同一方法，
+      // 而不是各自直接调 refreshPlayUrls。
+      expect(source.contains('await handleStreamStall()'), isTrue);
+      final directCalls = 'refreshPlayUrls();'.allMatches(source).length;
+      // 只允许在串行化入口内部自调用一次，其他地方必须走 handleStreamStall
+      expect(directCalls, lessThanOrEqualTo(1));
+    });
+
+    test('重试有冷却时间，避免签名刚过期时疯狂重拉', () {
+      final source = readController();
+      // 斗鱼签名 expire=300，但 CDN 可能在签名到期前几分钟就掐断，
+      // 没有冷却会导致连续 open 把播放器状态搅乱
+      expect(source, contains('_lastRetryAt'));
+      expect(source, contains('_retryCooldown'));
+    });
+
+    test('切线路不会与其他重试并发', () {
+      final source = readController();
+      // changePlayLine 也会触发 jump/open，必须纳入同一把锁
+      final idx = source.indexOf('changePlayLine(int index)');
+      expect(idx, greaterThan(-1));
+      final body = source.substring(idx, idx + 400);
+      expect(body, contains('_refreshingPlayUrls'));
+    });
+  });
 }
