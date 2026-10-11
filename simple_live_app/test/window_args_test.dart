@@ -69,6 +69,18 @@ void main() {
     });
   });
 
+  group('toLiveRoomDetail 平台隔离', () {
+    test('桌面端分支被平台判定包住，移动端路径保留', () {
+      final source =
+          File('lib/routes/app_navigation.dart').readAsStringSync();
+      expect(source, contains('isMultiWindowPlatform'));
+      expect(source, contains('RoutePath.kLiveRoomDetail'));
+      expect(source, contains('MultiWindowService'));
+      // 移动端原有的 Get.toNamed 必须保留，不能被桌面分支替换掉
+      expect(source, contains('Get.toNamed(RoutePath.kLiveRoomDetail'));
+    });
+  });
+
   group('子窗口服务栈', () {
     test('initChildServices 的实现不注册 SyncService', () {
       final source = File(
