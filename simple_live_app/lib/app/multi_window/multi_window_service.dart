@@ -1,9 +1,17 @@
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
+import 'package:simple_live_app/app/constant.dart';
+import 'package:simple_live_app/app/controller/app_settings_controller.dart';
+import 'package:simple_live_app/app/event_bus.dart';
 import 'package:simple_live_app/app/log.dart';
 import 'package:simple_live_app/app/multi_window/window_args.dart';
 import 'package:simple_live_app/app/sites.dart';
+import 'package:simple_live_app/models/db/follow_user.dart';
+import 'package:simple_live_app/models/db/follow_user_tag.dart';
+import 'package:simple_live_app/models/db/history.dart';
+import 'package:simple_live_app/services/db_service.dart';
+import 'package:simple_live_app/services/local_storage_service.dart';
 import 'package:window_manager/window_manager.dart';
 
 /// 子窗口尺寸
@@ -27,6 +35,81 @@ class MultiWindowService extends GetxService {
   });
 
   bool get isChildWindow => !windowArgs.isMainWindow;
+
+  /// 主窗口注册数据服务处理器，响应子窗口的数据请求
+  ///
+  /// 子窗口（ChildLocalStorageService/ChildDBService）不能自己打开 Hive box：
+  /// 与主窗口同进程，Hive 的 .lock 独占文件锁在 Windows 上按句柄判定冲突，
+  /// 第二个 engine 加锁会永久阻塞。因此数据全部由主窗口读写、子窗口转发。
+  Future<void> registerMainWindowHandler() async {
+    if (isChildWindow) return;
+    final controller = WindowController.fromWindowId(windowId);
+    await controller.setWindowMethodHandler((call) async {
+      switch (call.method) {
+        case 'mw_snapshot':
+          return {
+            'settings':
+                LocalStorageService.instance.settingsBox.toMap(),
+            'shield':
+                LocalStorageService.instance.shieldBox.values.toList(),
+            'follows': DBService.instance.followBox.values
+                .map((e) => e.toJson())
+                .toList(),
+            'tags': DBService.instance.tagBox.values
+                .map((e) => e.toJson())
+                .toList(),
+            'histories': DBService.instance.historyBox.values
+                .map((e) => e.toJson())
+                .toList(),
+          };
+        case 'mw_set_value':
+          final args = Map<dynamic, dynamic>.from(call.arguments as Map);
+          await LocalStorageService.instance
+              .setValue(args['key'], args['value']);
+          return true;
+        case 'mw_remove_value':
+          await LocalStorageService.instance.removeValue(call.arguments);
+          return true;
+        case 'mw_shield_add':
+          await LocalStorageService.instance.addShield(call.arguments);
+          AppSettingsController.instance.shieldList.add(call.arguments);
+          return true;
+        case 'mw_shield_remove':
+          await LocalStorageService.instance.removeShield(call.arguments);
+          AppSettingsController.instance.shieldList.remove(call.arguments);
+          return true;
+        case 'mw_shield_clear':
+          await LocalStorageService.instance.clearShield();
+          AppSettingsController.instance.shieldList.clear();
+          return true;
+        case 'mw_add_follow':
+          await DBService.instance.addFollow(FollowUser.fromJson(
+              Map<String, dynamic>.from(call.arguments as Map)));
+          // 通知主窗口关注页刷新
+          EventBus.instance.emit(Constant.kUpdateFollow, null);
+          return true;
+        case 'mw_delete_follow':
+          await DBService.instance.deleteFollow(call.arguments as String);
+          EventBus.instance.emit(Constant.kUpdateFollow, null);
+          return true;
+        case 'mw_add_history':
+          await DBService.instance.addOrUpdateHistory(History.fromJson(
+              Map<String, dynamic>.from(call.arguments as Map)));
+          return true;
+        case 'mw_add_follow_tag':
+        case 'mw_update_follow_tag':
+          // 子窗口已生成好 id，主窗口直接落盘
+          await DBService.instance.updateFollowTag(FollowUserTag.fromJson(
+              Map<String, dynamic>.from(call.arguments as Map)));
+          return true;
+        case 'mw_delete_follow_tag':
+          await DBService.instance.deleteFollowTag(call.arguments as String);
+          return true;
+        default:
+          throw MissingPluginException('Not implemented: ${call.method}');
+      }
+    });
+  }
 
   /// 打开直播间：已开则聚焦，否则新建
   Future<void> openRoom({

@@ -58,6 +58,10 @@ void main() async {
       await runChildWindow();
       return;
     }
+    // 主窗口：为子窗口提供数据转发服务。
+    // Hive box 被主窗口独占加锁，子窗口（同进程另一 engine）不能再打开，
+    // 其读写请求全部通过窗口通道转发到这里执行。
+    Get.find<MultiWindowService>().registerMainWindowHandler();
   }
 
   await migrateData();
@@ -90,8 +94,8 @@ Future<void> runChildWindow() async {
   if (Log.logFileWriter == null) Log.initWriter();
   Log.logPrint('[MW] child: engine started args=${windowArgs.encode()}');
   MediaKit.ensureInitialized();
-  await Hive.initFlutter((await getApplicationSupportDirectory()).path);
-  Log.logPrint('[MW] child: hive ready');
+  // 子窗口不能 Hive.openBox（Windows 文件锁被主窗口独占，会永久阻塞），
+  // 数据在 initChildServices 里从主窗口拉快照
   await initChildServices();
   Log.logPrint('[MW] child: services ready');
   await windowManager.ensureInitialized();

@@ -2,15 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
-import 'package:hive_flutter/hive_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/log.dart';
+import 'package:simple_live_app/app/multi_window/child_data_services.dart';
 import 'package:simple_live_app/app/utils.dart';
-import 'package:simple_live_app/models/db/follow_user.dart';
-import 'package:simple_live_app/models/db/follow_user_tag.dart';
-import 'package:simple_live_app/models/db/history.dart';
 import 'package:simple_live_app/routes/app_pages.dart';
 import 'package:simple_live_app/services/bilibili_account_service.dart';
 import 'package:simple_live_app/services/db_service.dart';
@@ -24,22 +21,31 @@ import 'package:window_manager/window_manager.dart';
 
 /// 子窗口的精简服务栈
 ///
-/// 与 main.dart 的 initServices() 的唯一区别：**不注册 SyncService**。
-/// SyncService.onInit 会无条件 UDP.bind(23235) 与 shelf serve 23234，
-/// 第二个窗口必然抛 SocketException(address already in use)，子窗口白屏。
+/// 与 main.dart 的 initServices() 的区别：
+/// 1. **不注册 SyncService**。SyncService.onInit 会无条件 UDP.bind(23235)
+///    与 shelf serve 23234，第二个窗口必然抛 SocketException(address already in use)。
+/// 2. **LocalStorageService/DBService 用子窗口版本**（ChildLocalStorageService/
+///    ChildDBService）。子窗口与主窗口同进程，Hive openBox 的 .lock 独占文件锁
+///    在 Windows 上按句柄判定冲突（macOS fcntl 按进程判定所以没事），
+///    第二个 engine 再开同一个 box 会永久阻塞 —— 表现为点开直播间卡死。
+///    子窗口改为从主窗口拉数据快照，写操作转发给主窗口落盘。
 ///
 /// 其余服务都是播放页必需的：关注状态走 FollowService/DBService，
 /// 历史写入走 DBService，B 站高画质走 BiliBiliAccountService，
 /// 主题与播放器参数走 AppSettingsController。
 Future<void> initChildServices() async {
-  Hive.registerAdapter(FollowUserAdapter());
-  Hive.registerAdapter(HistoryAdapter());
-  Hive.registerAdapter(FollowUserTagAdapter());
-
   Utils.packageInfo = await PackageInfo.fromPlatform();
   Log.d("Init LocalStorage Service (child window)");
-  await Get.put(LocalStorageService()).init();
-  await Get.put(DBService()).init();
+
+  // 数据全部经由主窗口转发（主窗口独占 Hive box 的文件锁）
+  final mainWindow = await findMainWindowController();
+  final snapshot = await fetchMainWindowSnapshot(mainWindow);
+  Log.logPrint('[MW] child: main window snapshot ready');
+  await Get.put<LocalStorageService>(
+          ChildLocalStorageService(mainWindow, snapshot))
+      .init();
+  await Get.put<DBService>(ChildDBService(mainWindow, snapshot)).init();
+
   Get.put(AppSettingsController());
   Get.put(BiliBiliAccountService());
   Get.put(DouyinAccountService());

@@ -203,4 +203,25 @@ class LocalStorageService extends GetxService {
     Log.d("Remove LocalStorage：$key");
     return await settingsBox.delete(key);
   }
+
+  /// 弹幕屏蔽词列表
+  ///
+  /// 独立成方法（而非直接暴露 shieldBox）是为了让多窗口子窗口的
+  /// ChildLocalStorageService 可以覆盖实现：子窗口无法打开 Hive box
+  /// （Windows 文件锁被主窗口独占），数据由主窗口转发。
+  Set<String> getShieldList() {
+    return shieldBox.values.toSet();
+  }
+
+  Future addShield(String value) async {
+    await shieldBox.put(value, value);
+  }
+
+  Future removeShield(String value) async {
+    await shieldBox.delete(value);
+  }
+
+  Future clearShield() async {
+    await shieldBox.clear();
+  }
 }
