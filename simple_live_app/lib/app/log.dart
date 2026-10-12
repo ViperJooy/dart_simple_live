@@ -7,7 +7,36 @@ import 'package:get/get.dart';
 import 'package:intl/intl.dart';
 import 'package:logger/logger.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/utils.dart';
+import 'package:simple_live_core/simple_live_core.dart';
+
+/// 初始化 simple_live_core 的日志转发
+///
+/// 主窗口与子窗口都需要调用。
+void initCoreLog() {
+  CoreLog.enableLog =
+      !kReleaseMode || AppSettingsController.instance.logEnable.value;
+  CoreLog.requestLogType = RequestLogType.short;
+  CoreLog.onPrintLog = (level, msg) {
+    switch (level) {
+      case Level.debug:
+        Log.d(msg);
+        break;
+      case Level.error:
+        Log.e(msg, StackTrace.current);
+        break;
+      case Level.info:
+        Log.i(msg);
+        break;
+      case Level.warning:
+        Log.w(msg);
+        break;
+      default:
+        Log.logPrint(msg);
+    }
+  };
+}
 
 class Log {
   static LogFileWriter? logFileWriter;

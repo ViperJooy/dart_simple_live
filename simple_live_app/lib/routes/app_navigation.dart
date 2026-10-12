@@ -5,6 +5,8 @@ import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_app/app/constant.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
+import 'package:simple_live_app/app/multi_window/multi_window_service.dart';
+import 'package:simple_live_app/app/multi_window/window_args.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/models/sync_client_info_model.dart';
@@ -48,6 +50,13 @@ class AppNavigator {
           SmartDialog.showToast("未完成登录");
         }
       }
+    }
+
+    // 桌面端：点击直播间直接开新窗口，主窗口只负责浏览
+    if (isMultiWindowPlatform) {
+      await Get.find<MultiWindowService>()
+          .openRoom(site: site, roomId: roomId, title: '');
+      return;
     }
 
     Get.toNamed(RoutePath.kLiveRoomDetail, arguments: site, parameters: {

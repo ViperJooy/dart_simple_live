@@ -7,6 +7,7 @@
 #include "generated_plugin_registrant.h"
 
 #include <connectivity_plus/connectivity_plus_windows_plugin.h>
+#include <desktop_multi_window/desktop_multi_window_plugin.h>
 #include <dynamic_color/dynamic_color_plugin_c_api.h>
 #include <flutter_inappwebview_windows/flutter_inappwebview_windows_plugin_c_api.h>
 #include <media_kit_libs_windows_video/media_kit_libs_windows_video_plugin_c_api.h>
@@ -22,6 +23,8 @@
 void RegisterPlugins(flutter::PluginRegistry* registry) {
   ConnectivityPlusWindowsPluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("ConnectivityPlusWindowsPlugin"));
+  DesktopMultiWindowPluginRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("DesktopMultiWindowPlugin"));
   DynamicColorPluginCApiRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("DynamicColorPluginCApi"));
   FlutterInappwebviewWindowsPluginCApiRegisterWithRegistrar(

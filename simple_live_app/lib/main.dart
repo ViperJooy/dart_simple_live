@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -15,6 +16,11 @@ import 'package:path_provider/path_provider.dart';
 import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/log.dart';
+import 'package:simple_live_app/app/multi_window/child_live_room_app.dart';
+import 'package:simple_live_app/app/multi_window/multi_window_service.dart';
+import 'package:simple_live_app/app/multi_window/window_args.dart';
+import 'package:simple_live_app/app/sites.dart';
+import 'package:simple_live_app/modules/live_room/live_room_controller.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/app/utils/listen_fourth_button.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
@@ -30,7 +36,6 @@ import 'package:simple_live_app/services/follow_service.dart';
 import 'package:simple_live_app/services/local_storage_service.dart';
 import 'package:simple_live_app/services/sync_service.dart';
 import 'package:simple_live_app/widgets/status/app_loadding_widget.dart';
-import 'package:simple_live_core/simple_live_core.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'package:path/path.dart' as p;
@@ -38,6 +43,23 @@ import 'package:dynamic_color/dynamic_color.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 子窗口由 desktop_multi_window 以独立 engine 启动，启动参数里带直播间信息。
+  // 主窗口也要注册 MultiWindowService，因为 AppNavigator.toLiveRoomDetail
+  // 在桌面端要用它开新窗口。
+  if (isMultiWindowPlatform) {
+    final controller = await WindowController.fromCurrentEngine();
+    final windowArgs = WindowArgs.decode(controller.arguments);
+    Get.put(MultiWindowService(
+      windowId: controller.windowId,
+      windowArgs: windowArgs,
+    ));
+    if (!windowArgs.isMainWindow) {
+      await runChildWindow();
+      return;
+    }
+  }
+
   await migrateData();
   await initWindow();
   MediaKit.ensureInitialized();
@@ -57,6 +79,41 @@ void main() async {
   );
   SystemChrome.setSystemUIOverlayStyle(systemUiOverlayStyle);
   runApp(const MyApp());
+}
+
+/// 子窗口入口
+Future<void> runChildWindow() async {
+  final service = Get.find<MultiWindowService>();
+  final windowArgs = service.windowArgs;
+
+  MediaKit.ensureInitialized();
+  await Hive.initFlutter((await getApplicationSupportDirectory()).path);
+  await initChildServices();
+  await windowManager.ensureInitialized();
+  await service.registerChildWindowHandler();
+
+  runApp(const ChildLiveRoomApp());
+
+  // LiveRoomController 的 onInit 会同步调用 loadData()，里面用了
+  // SmartDialog.showLoading。它依赖 FlutterSmartDialog.init 的 builder 跑过之后
+  // DialogProxy.initialize() 才会初始化 loadingWidget（late 字段）。
+  // 若在 runApp 之前 Get.put，首次 showLoading 就会抛
+  // LateInitializationError: Field 'loadingWidget' has not been initialized，
+  // 表现为「直播间加载失败」，必须手动刷新才恢复。
+  // 所以把控制器推迟到 childApp 的首帧之后再创建，
+  // 由 ChildLiveRoomApp 内部的占位页等待并重建。
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    Get.put<LiveRoomController>(LiveRoomController(
+      pSite: Sites.allSites[windowArgs.siteId]!,
+      pRoomId: windowArgs.roomId,
+    ));
+  });
+
+  // 等原生视图挂到窗口后再设置窗口属性并显示。
+  // Dart 首帧不代表 NSWindow 已就绪，过早调用 window_manager 会 nil 解包崩溃。
+  WidgetsBinding.instance.addPostFrameCallback((_) async {
+    await service.setupSelfWindow();
+  });
 }
 
 /// 将Hive数据迁移到Application Support
@@ -141,30 +198,7 @@ Future initServices() async {
   initCoreLog();
 }
 
-void initCoreLog() {
-  //日志信息
-  CoreLog.enableLog =
-      !kReleaseMode || AppSettingsController.instance.logEnable.value;
-  CoreLog.requestLogType = RequestLogType.short;
-  CoreLog.onPrintLog = (level, msg) {
-    switch (level) {
-      case Level.debug:
-        Log.d(msg);
-        break;
-      case Level.error:
-        Log.e(msg, StackTrace.current);
-        break;
-      case Level.info:
-        Log.i(msg);
-        break;
-      case Level.warning:
-        Log.w(msg);
-        break;
-      default:
-        Log.logPrint(msg);
-    }
-  };
-}
+
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});

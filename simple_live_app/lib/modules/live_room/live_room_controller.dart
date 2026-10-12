@@ -99,6 +99,13 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 是否处于后台
   var isBackground = false;
 
+  /// 播放恢复监听（用于重置断流重试计数）
+  StreamSubscription? _playingRetrySubscription;
+
+  /// 缓冲状态监听与看门狗定时器
+  StreamSubscription? _bufferingSubscription;
+  Timer? _bufferingWatchdog;
+
   /// 直播间加载失败
   var loadError = false.obs;
   Error? error;
@@ -119,6 +126,26 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     loadData();
 
     scrollController.addListener(scrollListener);
+
+    //播放成功恢复后，重置重试计数，保证长时间观看时每次断流都有完整的重试次数
+    _playingRetrySubscription = player.stream.playing.listen((playing) {
+      if (playing) {
+        mediaErrorRetryCount = 0;
+      }
+    });
+
+    //缓冲看门狗：CDN 掐断连接时播放器可能收不到 EOF 而永久卡在缓冲状态，
+    //缓冲持续超过10秒则主动重新获取播放地址恢复播放。
+    //统一走 handleStreamStall，由它做串行化与冷却控制。
+    _bufferingSubscription = player.stream.buffering.listen((buffering) {
+      _bufferingWatchdog?.cancel();
+      if (buffering) {
+        _bufferingWatchdog = Timer.periodic(const Duration(seconds: 10), (_) {
+          Log.d("缓冲超时，尝试恢复播放");
+          handleStreamStall();
+        });
+      }
+    });
 
     super.onInit();
   }
@@ -155,7 +182,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       if (countdown.value <= 0) {
         timer = Timer(const Duration(seconds: 10), () async {
           await WakelockPlus.disable();
-          exit(0);
+          await closeSelf();
         });
         autoExitTimer?.cancel();
         var delay = await Utils.showAlertDialog("定时关闭已到时,是否延迟关闭?",
@@ -168,7 +195,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         } else {
           delayAutoExit.value = false;
           await WakelockPlus.disable();
-          exit(0);
+          await closeSelf();
         }
       }
     });
@@ -337,7 +364,14 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       loadError.value = true;
       error = e as Error;
     } finally {
-      SmartDialog.dismiss(status: SmartStatus.loading);
+      // 若 showLoading 未真正生效（例如子窗口里 FlutterSmartDialog 尚未初始化），
+      // dismiss 会访问未赋值的 late 字段 loadingWidget 而抛异常。
+      // 此时本就没有 loading 需要关闭，忽略即可。
+      try {
+        SmartDialog.dismiss(status: SmartStatus.loading);
+      } catch (e) {
+        Log.logPrint(e);
+      }
     }
   }
 
@@ -409,14 +443,102 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     initPlaylist();
   }
 
-  void changePlayLine(int index) {
-    currentLineIndex = index;
-    //重置错误次数
-    mediaErrorRetryCount = 0;
-    setPlayer();
+  /// 切换线路
+  ///
+  /// 与断流重试共用 [_refreshingPlayUrls] 这把锁：切线路同样会触发
+  /// player.jump，若与重试并发会把 mpv 的 playlist 状态搅乱。
+  Future<void> changePlayLine(int index) async {
+    if (_refreshingPlayUrls) {
+      return;
+    }
+    _refreshingPlayUrls = true;
+    try {
+      currentLineIndex = index;
+      //重置错误次数
+      mediaErrorRetryCount = 0;
+      await setPlayer();
+    } finally {
+      _refreshingPlayUrls = false;
+    }
   }
 
-  void initPlaylist() async {
+  /// 是否正在刷新播放地址（避免断流重试与缓冲看门狗并发刷新）
+  var _refreshingPlayUrls = false;
+
+  /// 上次重试的时间戳，用于重试冷却
+  var _lastRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// 重试冷却时间
+  ///
+  /// 斗鱼签名地址 expire=300 秒，但 CDN 可能在签名真正到期前就掐断连接。
+  /// 没有冷却时，mediaEnd / mediaError / 缓冲看门狗会在同一秒内连续触发多次
+  /// player.open，把 mpv 的 playlist 状态搅乱，表现为播放几分钟后画面卡死、
+  /// 不报错、也没有 EOF。
+  static const _retryCooldown = Duration(seconds: 10);
+
+  /// 断流/缓冲停滞的统一处理入口
+  ///
+  /// 所有触发源（mediaEnd、mediaError、缓冲看门狗）都必须汇聚到这里，
+  /// 由 [_refreshingPlayUrls] 串行化，并经过 [_retryCooldown] 冷却。
+  /// 返回 true 表示已经发起了一次重拉流。
+  Future<bool> handleStreamStall() async {
+    // 已有重拉流在进行中，直接忽略，避免并发 open
+    if (_refreshingPlayUrls) {
+      Log.d("已有重拉流在进行，忽略本次断流信号");
+      return false;
+    }
+    // 冷却期内不重复重拉
+    final now = DateTime.now();
+    if (now.difference(_lastRetryAt) < _retryCooldown) {
+      Log.d("重试冷却中，${_retryCooldown.inSeconds - now.difference(_lastRetryAt).inSeconds}s 后再试");
+      return false;
+    }
+    // 未开播 / 尚未拿到详情 / 清晰度为空时不重拉
+    if (!liveStatus.value || detail.value == null || qualites.isEmpty) {
+      return false;
+    }
+    _lastRetryAt = now;
+    return refreshPlayUrls();
+  }
+
+  /// 重新请求播放地址并刷新播放
+  ///
+  /// 部分平台（如斗鱼）的流地址带时效签名，到期后 CDN 会主动断开连接，
+  /// 此时重放旧地址会立刻失败，必须重新获取新签名的地址。
+  ///
+  /// [_refreshingPlayUrls] 在 player.open 真正完成后才解锁：open 是异步的，
+  /// 若在 open 调用前后立刻解锁，三个断流触发源会各自并发拉一次地址、
+  /// 各自 open 一次，mpv 的 playlist 状态会被搅乱。
+  Future<bool> refreshPlayUrls() async {
+    if (_refreshingPlayUrls) {
+      return false;
+    }
+    _refreshingPlayUrls = true;
+    try {
+      var playUrl = await site.liveSite.getPlayUrls(
+        detail: detail.value!,
+        quality: qualites[currentQuality],
+      );
+      if (playUrl.urls.isEmpty) {
+        return false;
+      }
+      playUrls.value = playUrl.urls;
+      playHeaders = playUrl.headers;
+      if (currentLineIndex >= playUrls.length) {
+        currentLineIndex = playUrls.length - 1;
+      }
+      // 等待 open 真正完成后再解锁，避免并发 open
+      await initPlaylist();
+      return true;
+    } catch (e) {
+      Log.logPrint(e);
+      return false;
+    } finally {
+      _refreshingPlayUrls = false;
+    }
+  }
+
+  Future<void> initPlaylist() async {
     currentLineInfo.value = "线路${currentLineIndex + 1}";
     errorMsg.value = "";
 
@@ -434,7 +556,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     await player.open(Playlist(mediaList));
   }
 
-  void setPlayer() async {
+  Future<void> setPlayer() async {
     currentLineInfo.value = "线路${currentLineIndex + 1}";
     errorMsg.value = "";
 
@@ -451,8 +573,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         await Future.delayed(const Duration(seconds: 1));
       }
       mediaErrorRetryCount += 1;
-      //刷新一次
-      setPlayer();
+      //统一走串行化入口，失败则重放当前地址
+      if (!await handleStreamStall()) {
+        setPlayer();
+      }
       return;
     }
 
@@ -462,15 +586,13 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       liveStatus.value = false;
     } else {
       changePlayLine(currentLineIndex + 1);
-
-      //setPlayer();
     }
   }
 
   int mediaErrorRetryCount = 0;
   @override
   void mediaError(String error) async {
-    super.mediaEnd();
+    super.mediaError(error);
     if (mediaErrorRetryCount < 2) {
       Log.d("播放失败，尝试第${mediaErrorRetryCount + 1}次刷新");
       if (mediaErrorRetryCount == 1) {
@@ -478,8 +600,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         await Future.delayed(const Duration(seconds: 1));
       }
       mediaErrorRetryCount += 1;
-      //刷新一次
-      setPlayer();
+      //统一走串行化入口，失败则重放当前地址
+      if (!await handleStreamStall()) {
+        setPlayer();
+      }
       return;
     }
 
@@ -487,8 +611,6 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       errorMsg.value = "播放失败";
       SmartDialog.showToast("播放失败:$error");
     } else {
-      //currentLineIndex += 1;
-      //setPlayer();
       changePlayLine(currentLineIndex + 1);
     }
   }
@@ -639,10 +761,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
               child: Slider(
                 min: 0,
                 max: 100,
-                value: AppSettingsController.instance.playerVolume.value,
+                value: currentVolume.value,
                 onChanged: (newValue) {
-                  player.setVolume(newValue);
-                  AppSettingsController.instance.setPlayerVolume(newValue);
+                  setVolume(newValue);
                 },
               ),
             ),
@@ -1056,6 +1177,9 @@ ${error?.stackTrace}''');
     WidgetsBinding.instance.removeObserver(this);
     scrollController.removeListener(scrollListener);
     autoExitTimer?.cancel();
+    _playingRetrySubscription?.cancel();
+    _bufferingSubscription?.cancel();
+    _bufferingWatchdog?.cancel();
 
     liveDanmaku.stop();
     danmakuController = null;

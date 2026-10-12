@@ -3,6 +3,7 @@
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "desktop_multi_window/desktop_multi_window_plugin.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -25,6 +26,14 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  // desktop_multi_window 为每个子窗口创建独立 engine，method channel 不跨 engine
+  // 共享，必须为子窗口单独注册插件，否则子窗口内 media_kit / window_manager 全部失效
+  DesktopMultiWindowSetWindowCreatedCallback([](void *controller) {
+    auto *flutter_view_controller =
+        reinterpret_cast<flutter::FlutterViewController *>(controller);
+    auto *registry = flutter_view_controller->engine();
+    RegisterPlugins(registry);
+  });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {

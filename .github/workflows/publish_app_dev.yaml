@@ -174,7 +174,9 @@ jobs:
 
   # 打包Windows
   build-windows:
-    runs-on: windows-latest
+    # 固定 windows-2022：windows-latest 已升级 VS18/MSVC 14.51，
+    # flutter_inappwebview_windows 等插件使用的 <experimental/coroutine> 会直接编译报错
+    runs-on: windows-2022
     permissions:
       contents: write
     steps:
