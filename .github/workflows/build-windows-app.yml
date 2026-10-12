@@ -23,6 +23,11 @@ jobs:
       - name: Enable Flutter Desktop
         run: flutter config --enable-windows-desktop
 
+      # flutter_inappwebview monorepo 的 git 依赖含超长路径(iOS/macOS Swift
+      # 文件),Windows 默认 MAX_PATH 下 git checkout 会报 Filename too long
+      - name: Enable git long paths
+        run: git config --global core.longpaths true
+
       - name: Restore Packages
         working-directory: simple_live_app
         run: flutter pub get
