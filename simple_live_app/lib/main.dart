@@ -52,7 +52,13 @@ void main(List<String> args) async {
   // 见 room_process.dart 头部注释）
   final roomArgs = RoomProcessArgs.tryParse(args);
   if (roomArgs != null) {
-    await runRoomProcess(roomArgs);
+    try {
+      await runRoomProcess(roomArgs);
+    } catch (e) {
+      // 窗口初始隐藏，启动失败不能静默挂住一个隐形进程
+      Log.logPrint('[RoomProc] 启动失败: $e');
+      exit(1);
+    }
     return;
   }
 

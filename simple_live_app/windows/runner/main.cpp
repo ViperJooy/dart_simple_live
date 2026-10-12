@@ -2,6 +2,8 @@
 #include <flutter/flutter_view_controller.h>
 #include <windows.h>
 
+#include <algorithm>
+
 #include "flutter_window.h"
 #include "utils.h"
 
@@ -29,9 +31,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();
 
+  // 房间进程模式（--room ...）：窗口初始隐藏，由 Dart 侧 window_manager
+  // 配置好尺寸/标题/居中后再显示，避免默认尺寸窗口闪现的闪烁
+  bool hidden_at_launch =
+      std::find(command_line_arguments.begin(), command_line_arguments.end(),
+                "--room") != command_line_arguments.end();
+
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
-  FlutterWindow window(project);
+  FlutterWindow window(project, hidden_at_launch);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
   if (!window.Create(L"simple_live_app", origin, size)) {

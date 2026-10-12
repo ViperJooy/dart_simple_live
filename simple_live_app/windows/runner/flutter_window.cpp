@@ -84,8 +84,9 @@ static void RegisterChildWindowPlugins(flutter::PluginRegistry* registry) {
       registry->GetRegistrarForPlugin("WindowManagerPlugin"));
 }
 
-FlutterWindow::FlutterWindow(const flutter::DartProject& project)
-    : project_(project) {}
+FlutterWindow::FlutterWindow(const flutter::DartProject& project,
+                             bool hidden_at_launch)
+    : project_(project), hidden_at_launch_(hidden_at_launch) {}
 
 FlutterWindow::~FlutterWindow() {}
 
@@ -119,14 +120,19 @@ bool FlutterWindow::OnCreate() {
   SetWindowSubclass(flutter_controller_->view()->GetNativeWindow(),
                     FlutterViewInputLogSubclassProc, 1, 0);
 
-  flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
-  });
+  if (!hidden_at_launch_) {
+    flutter_controller_->engine()->SetNextFrameCallback([&]() {
+      this->Show();
+    });
 
-  // Flutter can complete the first frame before the "show window" callback is
-  // registered. The following call ensures a frame is pending to ensure the
-  // window is shown. It is a no-op if the first frame hasn't completed yet.
-  flutter_controller_->ForceRedraw();
+    // Flutter can complete the first frame before the "show window" callback is
+    // registered. The following call ensures a frame is pending to ensure the
+    // window is shown. It is a no-op if the first frame hasn't completed yet.
+    flutter_controller_->ForceRedraw();
+  }
+  // 房间进程模式（hidden_at_launch_）：窗口保持隐藏，由 Dart 侧
+  // window_manager.waitUntilReadyToShow 设置好尺寸/标题/居中后自行 show，
+  // 避免「先默认尺寸闪现、再跳变」的闪烁。
 
   return true;
 }
