@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -62,6 +63,22 @@ void main() async {
     // Hive box 被主窗口独占加锁，子窗口（同进程另一 engine）不能再打开，
     // 其读写请求全部通过窗口通道转发到这里执行。
     Get.find<MultiWindowService>().registerMainWindowHandler();
+
+    // 诊断：主窗口框架层探针（排查多窗口下主窗口点击失灵，排查后可移除）
+    // 1. pointerRouter 全局路由：框架层收到的每一次 pointer down
+    //    （绕过 hit-test 吸收，SmartDialog 遮罩也挡不住）
+    GestureBinding.instance.pointerRouter.addGlobalRoute((PointerEvent event) {
+      if (event is PointerDownEvent) {
+        Log.logPrint('[MW] main: framework pointer down ${event.position}');
+      }
+    });
+    // 2. 帧产出探针：每 3 秒主动排一帧，帧没产出来就说明 UI 线程停了
+    Timer.periodic(const Duration(seconds: 3), (_) {
+      WidgetsBinding.instance.scheduleFrame();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Log.logPrint('[MW] main: frame rendered');
+      });
+    });
   }
 
   await migrateData();

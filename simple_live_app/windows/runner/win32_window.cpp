@@ -31,7 +31,33 @@ constexpr const wchar_t kGetPreferredBrightnessRegValue[] = L"AppsUseLightTheme"
 // The number of Win32Window objects that currently exist.
 static int g_active_window_count = 0;
 
-// ---- 诊断：主窗口窗口消息落盘（排查多窗口下主窗口点击失灵，排查后移除）----
+using EnableNonClientDpiScaling = BOOL __stdcall(HWND hwnd);
+
+// Scale helper to convert logical scaler values to physical using passed in
+// scale factor
+int Scale(int source, double scale_factor) {
+  return static_cast<int>(source * scale_factor);
+}
+
+// Dynamically loads the |EnableNonClientDpiScaling| from the User32 module.
+// This API is only needed for PerMonitor V1 awareness mode.
+void EnableFullDpiSupportIfAvailable(HWND hwnd) {
+  HMODULE user32_module = LoadLibraryA("User32.dll");
+  if (!user32_module) {
+    return;
+  }
+  auto enable_non_client_dpi_scaling =
+      reinterpret_cast<EnableNonClientDpiScaling*>(
+          GetProcAddress(user32_module, "EnableNonClientDpiScaling"));
+  if (enable_non_client_dpi_scaling != nullptr) {
+    enable_non_client_dpi_scaling(hwnd);
+  }
+  FreeLibrary(user32_module);
+}
+
+}  // namespace
+
+// ---- 诊断：窗口消息落盘（排查多窗口下主窗口点击失灵，排查后移除）----
 // 记录输入/焦点/启用状态相关消息，同时记录当时的鼠标捕获窗口、
 // 前台窗口和本窗口启用状态，用于区分「Windows 没投递输入」
 // 和「Flutter engine 收到但没响应」。输出到 %TEMP%\simple_live_input.log
@@ -52,6 +78,8 @@ void DebugLogWindowMessage(HWND hwnd, UINT message, WPARAM wparam,
     case WM_ENABLE: name = "WM_ENABLE"; break;
     case WM_CLOSE: name = "WM_CLOSE"; break;
     case WM_CAPTURECHANGED: name = "WM_CAPTURECHANGED"; break;
+    case WM_POINTERDOWN: name = "WM_POINTERDOWN"; break;
+    case WM_POINTERUP: name = "WM_POINTERUP"; break;
     case WM_NCHITTEST:
       name = "WM_NCHITTEST";
       break;
@@ -89,32 +117,6 @@ void DebugLogWindowMessage(HWND hwnd, UINT message, WPARAM wparam,
   fclose(f);
 }
 // ---- 诊断结束 ----
-
-using EnableNonClientDpiScaling = BOOL __stdcall(HWND hwnd);
-
-// Scale helper to convert logical scaler values to physical using passed in
-// scale factor
-int Scale(int source, double scale_factor) {
-  return static_cast<int>(source * scale_factor);
-}
-
-// Dynamically loads the |EnableNonClientDpiScaling| from the User32 module.
-// This API is only needed for PerMonitor V1 awareness mode.
-void EnableFullDpiSupportIfAvailable(HWND hwnd) {
-  HMODULE user32_module = LoadLibraryA("User32.dll");
-  if (!user32_module) {
-    return;
-  }
-  auto enable_non_client_dpi_scaling =
-      reinterpret_cast<EnableNonClientDpiScaling*>(
-          GetProcAddress(user32_module, "EnableNonClientDpiScaling"));
-  if (enable_non_client_dpi_scaling != nullptr) {
-    enable_non_client_dpi_scaling(hwnd);
-  }
-  FreeLibrary(user32_module);
-}
-
-}  // namespace
 
 // Manages the Win32Window's window class registration.
 class WindowClassRegistrar {

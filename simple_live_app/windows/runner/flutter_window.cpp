@@ -1,9 +1,35 @@
 #include "flutter_window.h"
 
+#include <commctrl.h>
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
 #include "desktop_multi_window/desktop_multi_window_plugin.h"
+
+#pragma comment(lib, "comctl32.lib")
+
+namespace {
+
+// 诊断：子类化主窗口的 FlutterView HWND，记录送达 Flutter 嵌入层的
+// 指针消息（排查多窗口下主窗口输入失灵，排查后移除）。
+// 客户区点击的实际接收者是 FlutterView 子窗口，顶层 WndProc 看不到。
+LRESULT CALLBACK FlutterViewInputLogSubclassProc(HWND hwnd, UINT message,
+                                                 WPARAM wparam, LPARAM lparam,
+                                                 UINT_PTR subclass_id,
+                                                 DWORD_PTR ref_data) {
+  switch (message) {
+    case WM_POINTERDOWN:
+    case WM_POINTERUP:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_RBUTTONDOWN:
+      DebugLogWindowMessage(hwnd, message, wparam, lparam);
+      break;
+  }
+  return DefSubclassProc(hwnd, message, wparam, lparam);
+}
+
+}  // namespace
 
 // 子窗口（独立 engine）的白名单插件头，与 generated_plugin_registrant.cc
 // 保持一致，仅排除 flutter_inappwebview_windows。
@@ -89,6 +115,9 @@ bool FlutterWindow::OnCreate() {
     RegisterChildWindowPlugins(registry);
   });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+  // 诊断：挂输入日志子类化（排查后移除）
+  SetWindowSubclass(flutter_controller_->view()->GetNativeWindow(),
+                    FlutterViewInputLogSubclassProc, 1, 0);
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();

@@ -7,6 +7,11 @@
 #include <memory>
 #include <string>
 
+// 诊断：窗口消息落盘（排查多窗口下主窗口输入失灵，排查后移除）。
+// 主窗口顶层 WndProc 与 FlutterView 子类化 proc 共用。
+void DebugLogWindowMessage(HWND hwnd, UINT message, WPARAM wparam,
+                           LPARAM lparam);
+
 // A class abstraction for a high DPI-aware Win32 Window. Intended to be
 // inherited from by classes that wish to specialize with custom
 // rendering and input handling
