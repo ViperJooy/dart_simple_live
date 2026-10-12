@@ -86,11 +86,17 @@ Future<void> runChildWindow() async {
   final service = Get.find<MultiWindowService>();
   final windowArgs = service.windowArgs;
 
+  // 诊断 Windows 子窗口卡死：确保日志写文件（排查后可移除）
+  if (Log.logFileWriter == null) Log.initWriter();
+  Log.logPrint('[MW] child: engine started args=${windowArgs.encode()}');
   MediaKit.ensureInitialized();
   await Hive.initFlutter((await getApplicationSupportDirectory()).path);
+  Log.logPrint('[MW] child: hive ready');
   await initChildServices();
+  Log.logPrint('[MW] child: services ready');
   await windowManager.ensureInitialized();
   await service.registerChildWindowHandler();
+  Log.logPrint('[MW] child: windowManager ready, runApp');
 
   runApp(const ChildLiveRoomApp());
 
@@ -103,6 +109,7 @@ Future<void> runChildWindow() async {
   // 所以把控制器推迟到 childApp 的首帧之后再创建，
   // 由 ChildLiveRoomApp 内部的占位页等待并重建。
   WidgetsBinding.instance.addPostFrameCallback((_) {
+    Log.logPrint('[MW] child: first frame, creating LiveRoomController');
     Get.put<LiveRoomController>(LiveRoomController(
       pSite: Sites.allSites[windowArgs.siteId]!,
       pRoomId: windowArgs.roomId,

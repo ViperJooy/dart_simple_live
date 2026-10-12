@@ -36,6 +36,9 @@ class MultiWindowService extends GetxService {
   }) async {
     try {
       final args = WindowArgs(siteId: site.id, roomId: roomId, title: title);
+      // 诊断 Windows 子窗口卡死：确保日志写文件（排查后可移除）
+      if (Log.logFileWriter == null) Log.initWriter();
+      Log.logPrint('[MW] openRoom begin: ${site.id}/$roomId');
       final windows = await WindowController.getAll();
       for (final controller in windows) {
         final existing = WindowArgs.decode(controller.arguments);
@@ -45,14 +48,22 @@ class MultiWindowService extends GetxService {
           return;
         }
       }
-      await WindowController.create(
+      Log.logPrint('[MW] openRoom: creating child window');
+      final controller = await WindowController.create(
         WindowConfiguration(
           arguments: args.encode(),
           hiddenAtLaunch: true,
         ),
       );
+      // 原生 Create 失败时返回空字符串（release 下 assert 被移除），
+      // 表现为点了没反应，必须显式记录
+      if (controller.windowId.isEmpty) {
+        Log.logPrint('[MW] openRoom FAILED: native createWindow returned empty id');
+      } else {
+        Log.logPrint('[MW] openRoom: child window created id=${controller.windowId}');
+      }
     } catch (e) {
-      Log.logPrint('打开新窗口失败: $e');
+      Log.logPrint('[MW] 打开新窗口失败: $e');
     }
   }
 
@@ -67,10 +78,12 @@ class MultiWindowService extends GetxService {
   Future<void> setupSelfWindow() async {
     if (!isChildWindow) return;
     try {
+      Log.logPrint('[MW] child: setupSelfWindow waiting native view');
       if (!await _waitForNativeView()) {
-        Log.logPrint('子窗口视图未就绪，跳过窗口设置');
+        Log.logPrint('[MW] child: 子窗口视图未就绪，跳过窗口设置');
         return;
       }
+      Log.logPrint('[MW] child: native view ready, set size/title/show');
       final size =
           _childWindowSize[windowArgs.siteId] ?? _defaultChildWindowSize;
       await windowManager.setSize(size);
@@ -80,8 +93,9 @@ class MultiWindowService extends GetxService {
           : '${windowArgs.title} - Simple Live';
       await windowManager.setTitle(title);
       await windowManager.show();
+      Log.logPrint('[MW] child: window shown');
     } catch (e) {
-      Log.logPrint('子窗口初始化失败: $e');
+      Log.logPrint('[MW] child: 子窗口初始化失败: $e');
     }
   }
 

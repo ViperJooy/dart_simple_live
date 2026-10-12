@@ -139,6 +139,7 @@ class LogFileWriter {
     initFile();
   }
   IOSink? fileWriter;
+  final List<String> _pending = [];
   void initFile() async {
     var supportDir = await getApplicationSupportDirectory();
     var logDir = Directory("${supportDir.path}/log");
@@ -147,10 +148,20 @@ class LogFileWriter {
     }
     var logFile = File("${logDir.path}/$fileName");
     fileWriter = logFile.openWrite(mode: FileMode.append);
+    // 落盘前缓冲的日志(初始化期间调用 write 的内容)补写
+    for (final line in _pending) {
+      fileWriter?.write(line);
+      fileWriter?.write("\r\n");
+    }
+    _pending.clear();
     writeSystemInfo();
   }
 
   void write(String content) {
+    if (fileWriter == null) {
+      _pending.add(content);
+      return;
+    }
     fileWriter?.write(content);
     fileWriter?.write("\r\n");
   }
