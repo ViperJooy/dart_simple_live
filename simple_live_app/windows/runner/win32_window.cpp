@@ -3,6 +3,8 @@
 #include <dwmapi.h>
 #include <flutter_windows.h>
 
+#include <cstdio>
+
 #include "resource.h"
 
 namespace {
@@ -28,6 +30,65 @@ constexpr const wchar_t kGetPreferredBrightnessRegValue[] = L"AppsUseLightTheme"
 
 // The number of Win32Window objects that currently exist.
 static int g_active_window_count = 0;
+
+// ---- 诊断：主窗口窗口消息落盘（排查多窗口下主窗口点击失灵，排查后移除）----
+// 记录输入/焦点/启用状态相关消息，同时记录当时的鼠标捕获窗口、
+// 前台窗口和本窗口启用状态，用于区分「Windows 没投递输入」
+// 和「Flutter engine 收到但没响应」。输出到 %TEMP%\simple_live_input.log
+void DebugLogWindowMessage(HWND hwnd, UINT message, WPARAM wparam,
+                           LPARAM lparam) {
+  const char* name = nullptr;
+  switch (message) {
+    case WM_LBUTTONDOWN: name = "WM_LBUTTONDOWN"; break;
+    case WM_LBUTTONUP: name = "WM_LBUTTONUP"; break;
+    case WM_RBUTTONDOWN: name = "WM_RBUTTONDOWN"; break;
+    case WM_MBUTTONDOWN: name = "WM_MBUTTONDOWN"; break;
+    case WM_NCLBUTTONDOWN: name = "WM_NCLBUTTONDOWN"; break;
+    case WM_KEYDOWN: name = "WM_KEYDOWN"; break;
+    case WM_SETFOCUS: name = "WM_SETFOCUS"; break;
+    case WM_KILLFOCUS: name = "WM_KILLFOCUS"; break;
+    case WM_ACTIVATE: name = "WM_ACTIVATE"; break;
+    case WM_MOUSEACTIVATE: name = "WM_MOUSEACTIVATE"; break;
+    case WM_ENABLE: name = "WM_ENABLE"; break;
+    case WM_CLOSE: name = "WM_CLOSE"; break;
+    case WM_CAPTURECHANGED: name = "WM_CAPTURECHANGED"; break;
+    case WM_NCHITTEST:
+      name = "WM_NCHITTEST";
+      break;
+    default:
+      return;
+  }
+  // WM_NCHITTEST 随鼠标移动高频触发，节流为每秒最多一条
+  if (message == WM_NCHITTEST) {
+    static DWORD last_hit_test_log = 0;
+    DWORD now = GetTickCount();
+    if (now - last_hit_test_log < 1000) {
+      return;
+    }
+    last_hit_test_log = now;
+  }
+  char temp_dir[MAX_PATH] = {0};
+  if (GetEnvironmentVariableA("TEMP", temp_dir, MAX_PATH) == 0) {
+    return;
+  }
+  char path[MAX_PATH] = {0};
+  snprintf(path, MAX_PATH, "%s\\simple_live_input.log", temp_dir);
+  FILE* f = fopen(path, "a");
+  if (!f) {
+    return;
+  }
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  fprintf(f,
+          "%02d:%02d:%02d.%03d %-18s hwnd=%p capture=%p foreground=%p "
+          "enabled=%d wparam=0x%llx lparam=0x%llx\n",
+          st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, name,
+          (void*)hwnd, (void*)GetCapture(), (void*)GetForegroundWindow(),
+          IsWindowEnabled(hwnd) ? 1 : 0, (unsigned long long)wparam,
+          (unsigned long long)lparam);
+  fclose(f);
+}
+// ---- 诊断结束 ----
 
 using EnableNonClientDpiScaling = BOOL __stdcall(HWND hwnd);
 
@@ -178,6 +239,7 @@ Win32Window::MessageHandler(HWND hwnd,
                             UINT const message,
                             WPARAM const wparam,
                             LPARAM const lparam) noexcept {
+  DebugLogWindowMessage(hwnd, message, wparam, lparam);
   switch (message) {
     case WM_DESTROY:
       window_handle_ = nullptr;
