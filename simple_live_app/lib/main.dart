@@ -17,8 +17,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/log.dart';
+import 'package:simple_live_app/app/multi_window/child_data_services.dart';
 import 'package:simple_live_app/app/multi_window/child_live_room_app.dart';
 import 'package:simple_live_app/app/multi_window/multi_window_service.dart';
+import 'package:simple_live_app/app/multi_window/room_process.dart';
 import 'package:simple_live_app/app/multi_window/window_args.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/modules/live_room/live_room_controller.dart';
@@ -42,8 +44,17 @@ import 'package:window_manager/window_manager.dart';
 import 'package:path/path.dart' as p;
 import 'package:dynamic_color/dynamic_color.dart';
 
-void main() async {
+void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Windows 房间进程模式：simple_live_app.exe --room <siteId> <roomId> <快照文件>
+  // 每个直播间一个独立进程（同进程多 engine 在这台机器上输入路由会坏，
+  // 见 room_process.dart 头部注释）
+  final roomArgs = RoomProcessArgs.tryParse(args);
+  if (roomArgs != null) {
+    await runRoomProcess(roomArgs);
+    return;
+  }
 
   // 子窗口由 desktop_multi_window 以独立 engine 启动，启动参数里带直播间信息。
   // 主窗口也要注册 MultiWindowService，因为 AppNavigator.toLiveRoomDetail
@@ -91,6 +102,11 @@ void main() async {
   );
   //初始化服务
   await initServices();
+  // Windows 主窗口进程：轮询应用房间进程投递的写操作（关注/历史/设置落盘）
+  if (Platform.isWindows) {
+    RoomProcessStore.cleanupOldSnapshots();
+    RoomProcessStore.startWriteApplier();
+  }
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   //设置状态栏为透明
   SystemUiOverlayStyle systemUiOverlayStyle = const SystemUiOverlayStyle(
@@ -111,9 +127,15 @@ Future<void> runChildWindow() async {
   if (Log.logFileWriter == null) Log.initWriter();
   Log.logPrint('[MW] child: engine started args=${windowArgs.encode()}');
   MediaKit.ensureInitialized();
-  // 子窗口不能 Hive.openBox（Windows 文件锁被主窗口独占，会永久阻塞），
-  // 数据在 initChildServices 里从主窗口拉快照
-  await initChildServices();
+  // 子窗口不能 Hive.openBox（.lock 文件锁被主窗口独占），
+  // 数据从主窗口拉快照，写操作经窗口通道转发给主窗口落盘
+  final mainWindow = await findMainWindowController();
+  final snapshot = await fetchMainWindowSnapshot(mainWindow);
+  Log.logPrint('[MW] child: main window snapshot ready');
+  await initChildServices(
+    snapshot: snapshot,
+    invoker: (method, [args]) => mainWindow.invokeMethod(method, args),
+  );
   Log.logPrint('[MW] child: services ready');
   await windowManager.ensureInitialized();
   await service.registerChildWindowHandler();

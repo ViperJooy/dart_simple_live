@@ -7,6 +7,13 @@ import 'package:simple_live_app/models/db/history.dart';
 import 'package:simple_live_app/services/db_service.dart';
 import 'package:simple_live_app/services/local_storage_service.dart';
 
+/// 向主窗口进程发起数据请求的通道
+///
+/// 同进程多窗口（macOS）：包装 WindowController.invokeMethod 走窗口通道；
+/// 独立进程房间窗口（Windows）：包装 RoomProcessStore 的文件投递。
+typedef MainWindowInvoker = Future<dynamic> Function(String method,
+    [dynamic arguments]);
+
 /// 查找主窗口控制器（带重试）
 ///
 /// 子窗口的数据请求都通过主窗口转发，启动时先找到它。
@@ -44,19 +51,18 @@ Future<Map<dynamic, dynamic>> fetchMainWindowSnapshot(
 
 /// 子窗口的 LocalStorageService
 ///
-/// 为什么不能直接 Hive.openBox：desktop_multi_window 的子窗口与主窗口
-/// 同进程、不同 engine/isolate。Hive openBox 会对 .lock 文件加独占锁，
-/// Windows 的 LockFileEx 按句柄判定冲突（不同于 macOS fcntl 按进程判定），
-/// 同一进程的第二个 engine 再锁同一文件会永久阻塞 —— 表现为点开直播间卡死。
+/// 为什么不能直接 Hive.openBox：子窗口（同进程 engine 或独立进程）都不是
+/// Hive 锁的持有者，主窗口进程独占 .lock。Windows 上 LockFileEx 按句柄判定
+/// 冲突，第二个持有者加锁会永久阻塞 —— 表现为点开直播间卡死。
 ///
 /// 所以子窗口改为：启动时从主窗口拉一份快照做本地读取，
-/// 写操作更新内存后转发给主窗口落盘。
+/// 写操作更新内存后经 [invoke] 转发给主窗口进程落盘。
 class ChildLocalStorageService extends LocalStorageService {
-  final WindowController mainWindow;
+  final MainWindowInvoker invoke;
   final Map<dynamic, dynamic> _settings;
   final Set<String> _shield;
 
-  ChildLocalStorageService(this.mainWindow, Map<dynamic, dynamic> snapshot)
+  ChildLocalStorageService(this.invoke, Map<dynamic, dynamic> snapshot)
       : _settings = Map<dynamic, dynamic>.from(
             (snapshot['settings'] as Map?) ?? {}),
         _shield = Set<String>.from(
@@ -83,7 +89,7 @@ class ChildLocalStorageService extends LocalStorageService {
   Future setValue<T>(dynamic key, T value) async {
     Log.d("Set LocalStorage：$key\r\n$value");
     _settings[key] = value;
-    return await mainWindow.invokeMethod('mw_set_value', {
+    return await invoke('mw_set_value', {
       'key': key,
       'value': value,
     });
@@ -93,7 +99,7 @@ class ChildLocalStorageService extends LocalStorageService {
   Future removeValue<T>(dynamic key) async {
     Log.d("Remove LocalStorage：$key");
     _settings.remove(key);
-    return await mainWindow.invokeMethod('mw_remove_value', key);
+    return await invoke('mw_remove_value', key);
   }
 
   @override
@@ -104,33 +110,33 @@ class ChildLocalStorageService extends LocalStorageService {
   @override
   Future addShield(String value) async {
     _shield.add(value);
-    await mainWindow.invokeMethod('mw_shield_add', value);
+    await invoke('mw_shield_add', value);
   }
 
   @override
   Future removeShield(String value) async {
     _shield.remove(value);
-    await mainWindow.invokeMethod('mw_shield_remove', value);
+    await invoke('mw_shield_remove', value);
   }
 
   @override
   Future clearShield() async {
     _shield.clear();
-    await mainWindow.invokeMethod('mw_shield_clear');
+    await invoke('mw_shield_clear');
   }
 }
 
 /// 子窗口的 DBService
 ///
 /// 与 ChildLocalStorageService 同理：关注/历史数据来自主窗口快照，
-/// 写操作更新内存后转发给主窗口落盘。
+/// 写操作更新内存后转发给主窗口进程落盘。
 class ChildDBService extends DBService {
-  final WindowController mainWindow;
+  final MainWindowInvoker invoke;
   final Map<String, FollowUser> _follows;
   final Map<String, FollowUserTag> _tags;
   final Map<String, History> _histories;
 
-  ChildDBService(this.mainWindow, Map<dynamic, dynamic> snapshot)
+  ChildDBService(this.invoke, Map<dynamic, dynamic> snapshot)
       : _follows = {
           for (final e in (snapshot['follows'] as List?) ?? [])
             (e as Map)['id'] as String: FollowUser.fromJson(
@@ -165,13 +171,13 @@ class ChildDBService extends DBService {
   @override
   Future addFollow(FollowUser follow) async {
     _follows[follow.id] = follow;
-    await mainWindow.invokeMethod('mw_add_follow', follow.toJson());
+    await invoke('mw_add_follow', follow.toJson());
   }
 
   @override
   Future deleteFollow(String id) async {
     _follows.remove(id);
-    await mainWindow.invokeMethod('mw_delete_follow', id);
+    await invoke('mw_delete_follow', id);
   }
 
   @override
@@ -182,7 +188,7 @@ class ChildDBService extends DBService {
   @override
   Future addOrUpdateHistory(History history) async {
     _histories[history.id] = history;
-    await mainWindow.invokeMethod('mw_add_history', history.toJson());
+    await invoke('mw_add_history', history.toJson());
   }
 
   @override
@@ -211,19 +217,19 @@ class ChildDBService extends DBService {
     final String uniqueId = uuid.v4();
     final followUserTag = FollowUserTag(id: uniqueId, tag: tag, userId: []);
     _tags[uniqueId] = followUserTag;
-    await mainWindow.invokeMethod('mw_add_follow_tag', followUserTag.toJson());
+    await invoke('mw_add_follow_tag', followUserTag.toJson());
     return followUserTag;
   }
 
   @override
   Future updateFollowTag(FollowUserTag followTag) async {
     _tags[followTag.id] = followTag;
-    await mainWindow.invokeMethod('mw_update_follow_tag', followTag.toJson());
+    await invoke('mw_update_follow_tag', followTag.toJson());
   }
 
   @override
   Future deleteFollowTag(String id) async {
     _tags.remove(id);
-    await mainWindow.invokeMethod('mw_delete_follow_tag', id);
+    await invoke('mw_delete_follow_tag', id);
   }
 }

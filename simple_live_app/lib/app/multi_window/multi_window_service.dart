@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
@@ -5,6 +7,7 @@ import 'package:simple_live_app/app/constant.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/event_bus.dart';
 import 'package:simple_live_app/app/log.dart';
+import 'package:simple_live_app/app/multi_window/room_process.dart';
 import 'package:simple_live_app/app/multi_window/window_args.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
@@ -20,6 +23,78 @@ const _childWindowSize = {
   'douyin': Size(480, 854),
 };
 const _defaultChildWindowSize = Size(854, 480);
+
+/// 按平台取子窗口/房间进程窗口尺寸
+Size childWindowSizeFor(String siteId) =>
+    _childWindowSize[siteId] ?? _defaultChildWindowSize;
+
+/// 构建给子窗口/房间进程的数据快照
+///
+/// 子窗口（无论同进程 engine 还是独立进程）都不能自己打开 Hive box：
+/// Hive 的 .lock 独占文件锁只允许一个持有者。数据全部由主窗口进程读写。
+Map<String, dynamic> buildDataSnapshot() {
+  return {
+    'settings': LocalStorageService.instance.settingsBox.toMap(),
+    'shield': LocalStorageService.instance.shieldBox.values.toList(),
+    'follows':
+        DBService.instance.followBox.values.map((e) => e.toJson()).toList(),
+    'tags': DBService.instance.tagBox.values.map((e) => e.toJson()).toList(),
+    'histories':
+        DBService.instance.historyBox.values.map((e) => e.toJson()).toList(),
+  };
+}
+
+/// 处理子窗口/房间进程的数据写请求（窗口通道与文件投递共用）
+Future<dynamic> handleChildDataRequest(String method, dynamic arguments) async {
+  switch (method) {
+    case 'mw_snapshot':
+      return buildDataSnapshot();
+    case 'mw_set_value':
+      final args = Map<dynamic, dynamic>.from(arguments as Map);
+      await LocalStorageService.instance.setValue(args['key'], args['value']);
+      return true;
+    case 'mw_remove_value':
+      await LocalStorageService.instance.removeValue(arguments);
+      return true;
+    case 'mw_shield_add':
+      await LocalStorageService.instance.addShield(arguments);
+      AppSettingsController.instance.shieldList.add(arguments);
+      return true;
+    case 'mw_shield_remove':
+      await LocalStorageService.instance.removeShield(arguments);
+      AppSettingsController.instance.shieldList.remove(arguments);
+      return true;
+    case 'mw_shield_clear':
+      await LocalStorageService.instance.clearShield();
+      AppSettingsController.instance.shieldList.clear();
+      return true;
+    case 'mw_add_follow':
+      await DBService.instance.addFollow(
+          FollowUser.fromJson(Map<String, dynamic>.from(arguments as Map)));
+      // 通知主窗口关注页刷新
+      EventBus.instance.emit(Constant.kUpdateFollow, null);
+      return true;
+    case 'mw_delete_follow':
+      await DBService.instance.deleteFollow(arguments as String);
+      EventBus.instance.emit(Constant.kUpdateFollow, null);
+      return true;
+    case 'mw_add_history':
+      await DBService.instance.addOrUpdateHistory(
+          History.fromJson(Map<String, dynamic>.from(arguments as Map)));
+      return true;
+    case 'mw_add_follow_tag':
+    case 'mw_update_follow_tag':
+      // 子窗口已生成好 id，主窗口直接落盘
+      await DBService.instance.updateFollowTag(
+          FollowUserTag.fromJson(Map<String, dynamic>.from(arguments as Map)));
+      return true;
+    case 'mw_delete_follow_tag':
+      await DBService.instance.deleteFollowTag(arguments as String);
+      return true;
+    default:
+      throw MissingPluginException('Not implemented: $method');
+  }
+}
 
 /// 多窗口服务
 ///
@@ -41,74 +116,13 @@ class MultiWindowService extends GetxService {
   /// 子窗口（ChildLocalStorageService/ChildDBService）不能自己打开 Hive box：
   /// 与主窗口同进程，Hive 的 .lock 独占文件锁在 Windows 上按句柄判定冲突，
   /// 第二个 engine 加锁会永久阻塞。因此数据全部由主窗口读写、子窗口转发。
+  /// （仅同进程多窗口模式使用，即 macOS；Windows 走独立进程+文件投递，
+  /// 见 room_process.dart）
   Future<void> registerMainWindowHandler() async {
     if (isChildWindow) return;
     final controller = WindowController.fromWindowId(windowId);
-    await controller.setWindowMethodHandler((call) async {
-      switch (call.method) {
-        case 'mw_snapshot':
-          return {
-            'settings':
-                LocalStorageService.instance.settingsBox.toMap(),
-            'shield':
-                LocalStorageService.instance.shieldBox.values.toList(),
-            'follows': DBService.instance.followBox.values
-                .map((e) => e.toJson())
-                .toList(),
-            'tags': DBService.instance.tagBox.values
-                .map((e) => e.toJson())
-                .toList(),
-            'histories': DBService.instance.historyBox.values
-                .map((e) => e.toJson())
-                .toList(),
-          };
-        case 'mw_set_value':
-          final args = Map<dynamic, dynamic>.from(call.arguments as Map);
-          await LocalStorageService.instance
-              .setValue(args['key'], args['value']);
-          return true;
-        case 'mw_remove_value':
-          await LocalStorageService.instance.removeValue(call.arguments);
-          return true;
-        case 'mw_shield_add':
-          await LocalStorageService.instance.addShield(call.arguments);
-          AppSettingsController.instance.shieldList.add(call.arguments);
-          return true;
-        case 'mw_shield_remove':
-          await LocalStorageService.instance.removeShield(call.arguments);
-          AppSettingsController.instance.shieldList.remove(call.arguments);
-          return true;
-        case 'mw_shield_clear':
-          await LocalStorageService.instance.clearShield();
-          AppSettingsController.instance.shieldList.clear();
-          return true;
-        case 'mw_add_follow':
-          await DBService.instance.addFollow(FollowUser.fromJson(
-              Map<String, dynamic>.from(call.arguments as Map)));
-          // 通知主窗口关注页刷新
-          EventBus.instance.emit(Constant.kUpdateFollow, null);
-          return true;
-        case 'mw_delete_follow':
-          await DBService.instance.deleteFollow(call.arguments as String);
-          EventBus.instance.emit(Constant.kUpdateFollow, null);
-          return true;
-        case 'mw_add_history':
-          await DBService.instance.addOrUpdateHistory(History.fromJson(
-              Map<String, dynamic>.from(call.arguments as Map)));
-          return true;
-        case 'mw_add_follow_tag':
-        case 'mw_update_follow_tag':
-          // 子窗口已生成好 id，主窗口直接落盘
-          await DBService.instance.updateFollowTag(FollowUserTag.fromJson(
-              Map<String, dynamic>.from(call.arguments as Map)));
-          return true;
-        case 'mw_delete_follow_tag':
-          await DBService.instance.deleteFollowTag(call.arguments as String);
-          return true;
-        default:
-          throw MissingPluginException('Not implemented: ${call.method}');
-      }
-    });
+    await controller.setWindowMethodHandler(
+        (call) => handleChildDataRequest(call.method, call.arguments));
   }
 
   /// 打开直播间：已开则聚焦，否则新建
@@ -122,6 +136,15 @@ class MultiWindowService extends GetxService {
       // 诊断 Windows 子窗口卡死：确保日志写文件（排查后可移除）
       if (Log.logFileWriter == null) Log.initWriter();
       Log.logPrint('[MW] openRoom begin: ${site.id}/$roomId');
+
+      // Windows：同进程多 engine 在这台机器上输入路由会坏（主窗口点击失灵，
+      // dump 显示无线程阻塞，输入进了 flutter_windows.dll 却没到 Dart 层），
+      // 改为每个直播间一个独立进程，彻底绕开所有同进程多窗口问题
+      if (Platform.isWindows) {
+        await RoomProcessLauncher.openRoom(args);
+        return;
+      }
+
       final windows = await WindowController.getAll();
       for (final controller in windows) {
         final existing = WindowArgs.decode(controller.arguments);
@@ -167,8 +190,7 @@ class MultiWindowService extends GetxService {
         return;
       }
       Log.logPrint('[MW] child: native view ready, set size/title/show');
-      final size =
-          _childWindowSize[windowArgs.siteId] ?? _defaultChildWindowSize;
+      final size = childWindowSizeFor(windowArgs.siteId);
       await windowManager.setSize(size);
       await windowManager.center();
       final title = windowArgs.title.isEmpty
@@ -224,6 +246,13 @@ class MultiWindowService extends GetxService {
   /// 主窗口不支持关闭自身（关闭主窗口 = 退出应用，由原生层处理），故直接返回。
   Future<void> closeSelf() async {
     if (!isChildWindow) return;
+    if (windowId.isEmpty) {
+      // Windows 进程房间窗口（无窗口通道）：直接关自己的窗口，
+      // 关窗后整个进程自然退出。ChildLiveRoomApp 的 onWindowClose
+      // 会先拦截做播放器回收。
+      await windowManager.close();
+      return;
+    }
     await WindowController.fromWindowId(windowId).closeSelfWindow();
   }
 }

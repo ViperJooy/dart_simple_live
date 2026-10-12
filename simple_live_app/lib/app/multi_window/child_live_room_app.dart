@@ -25,26 +25,23 @@ import 'package:window_manager/window_manager.dart';
 /// 1. **不注册 SyncService**。SyncService.onInit 会无条件 UDP.bind(23235)
 ///    与 shelf serve 23234，第二个窗口必然抛 SocketException(address already in use)。
 /// 2. **LocalStorageService/DBService 用子窗口版本**（ChildLocalStorageService/
-///    ChildDBService）。子窗口与主窗口同进程，Hive openBox 的 .lock 独占文件锁
-///    在 Windows 上按句柄判定冲突（macOS fcntl 按进程判定所以没事），
-///    第二个 engine 再开同一个 box 会永久阻塞 —— 表现为点开直播间卡死。
-///    子窗口改为从主窗口拉数据快照，写操作转发给主窗口落盘。
+///    ChildDBService）。Hive box 的 .lock 文件锁由主窗口进程独占，子窗口
+///    （同进程 engine 或独立进程）都不能再开。数据由调用方注入：
+///    [snapshot] 是主窗口的数据快照，写操作经 [invoker] 转发给主窗口落盘。
 ///
 /// 其余服务都是播放页必需的：关注状态走 FollowService/DBService，
 /// 历史写入走 DBService，B 站高画质走 BiliBiliAccountService，
 /// 主题与播放器参数走 AppSettingsController。
-Future<void> initChildServices() async {
+Future<void> initChildServices({
+  required Map<dynamic, dynamic> snapshot,
+  required MainWindowInvoker invoker,
+}) async {
   Utils.packageInfo = await PackageInfo.fromPlatform();
   Log.d("Init LocalStorage Service (child window)");
 
-  // 数据全部经由主窗口转发（主窗口独占 Hive box 的文件锁）
-  final mainWindow = await findMainWindowController();
-  final snapshot = await fetchMainWindowSnapshot(mainWindow);
-  Log.logPrint('[MW] child: main window snapshot ready');
-  await Get.put<LocalStorageService>(
-          ChildLocalStorageService(mainWindow, snapshot))
+  await Get.put<LocalStorageService>(ChildLocalStorageService(invoker, snapshot))
       .init();
-  await Get.put<DBService>(ChildDBService(mainWindow, snapshot)).init();
+  await Get.put<DBService>(ChildDBService(invoker, snapshot)).init();
 
   Get.put(AppSettingsController());
   Get.put(BiliBiliAccountService());
