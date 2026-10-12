@@ -73,8 +73,8 @@ void DebugLogWindowMessage(HWND hwnd, UINT message, WPARAM wparam,
   }
   char path[MAX_PATH] = {0};
   snprintf(path, MAX_PATH, "%s\\simple_live_input.log", temp_dir);
-  FILE* f = fopen(path, "a");
-  if (!f) {
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "a") != 0 || !f) {
     return;
   }
   SYSTEMTIME st;
