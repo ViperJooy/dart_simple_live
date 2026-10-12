@@ -46,6 +46,8 @@ class AppSettingsController extends GetxController {
 
     hardwareDecode.value = LocalStorageService.instance
         .getValue(LocalStorageService.kHardwareDecode, true);
+    desktopMultiWindow.value = LocalStorageService.instance
+        .getValue(LocalStorageService.kDesktopMultiWindow, true);
     chatTextSize.value = LocalStorageService.instance
         .getValue(LocalStorageService.kChatTextSize, 14.0);
 
@@ -245,6 +247,17 @@ class AppSettingsController extends GetxController {
     hardwareDecode.value = e;
     LocalStorageService.instance
         .setValue(LocalStorageService.kHardwareDecode, e);
+  }
+
+  /// 桌面端点击直播间是否开新窗口
+  ///
+  /// 关闭后主窗口内跳转播放页。用于规避个别机器上 desktop_multi_window
+  /// 创建子窗口时的原生崩溃（如 Windows 11 24H2 coremessaging.dll 0xc0000005）。
+  var desktopMultiWindow = true.obs;
+  void setDesktopMultiWindow(bool e) {
+    desktopMultiWindow.value = e;
+    LocalStorageService.instance
+        .setValue(LocalStorageService.kDesktopMultiWindow, e);
   }
 
   var chatTextSize = 14.0.obs;

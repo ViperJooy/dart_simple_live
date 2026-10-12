@@ -42,6 +42,20 @@ class PlaySettingsPage extends GetView<AppSettingsController> {
                     },
                   ),
                 ),
+                if (Platform.isWindows || Platform.isMacOS) AppStyle.divider,
+                Obx(
+                  () => Visibility(
+                    visible: Platform.isWindows || Platform.isMacOS,
+                    child: SettingsSwitch(
+                      title: "多窗口播放",
+                      subtitle: "点击直播间在新窗口打开，关闭后在主窗口内播放。点击直播间闪退可尝试关闭此选项",
+                      value: controller.desktopMultiWindow.value,
+                      onChanged: (e) {
+                        controller.setDesktopMultiWindow(e);
+                      },
+                    ),
+                  ),
+                ),
                 if (Platform.isAndroid) AppStyle.divider,
                 Obx(
                   () => Visibility(

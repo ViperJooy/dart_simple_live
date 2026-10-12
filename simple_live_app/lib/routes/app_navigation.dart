@@ -52,8 +52,10 @@ class AppNavigator {
       }
     }
 
-    // 桌面端：点击直播间直接开新窗口，主窗口只负责浏览
-    if (isMultiWindowPlatform) {
+    // 桌面端：点击直播间直接开新窗口，主窗口只负责浏览。
+    // 用户可在设置中关闭多窗口（个别机器创建子窗口会原生崩溃）。
+    if (isMultiWindowPlatform &&
+        AppSettingsController.instance.desktopMultiWindow.value) {
       await Get.find<MultiWindowService>()
           .openRoom(site: site, roomId: roomId, title: '');
       return;

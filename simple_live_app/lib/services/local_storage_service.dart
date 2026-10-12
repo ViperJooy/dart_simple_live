@@ -65,6 +65,9 @@ class LocalStorageService extends GetxService {
   /// 硬件解码
   static const String kHardwareDecode = "HardwareDecode";
 
+  /// 桌面端多窗口（点击直播间开新窗口）
+  static const String kDesktopMultiWindow = "DesktopMultiWindow";
+
   /// 聊天区文字大小
   static const String kChatTextSize = "ChatTextSize";
 
