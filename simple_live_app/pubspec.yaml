@@ -88,6 +88,19 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
 
+dependency_overrides:
+  # Windows 端崩溃修复:插件 0.6.0 在注册时(即 App 启动时)就急切创建
+  # WinRT DispatcherQueue / Windows.UI.Composition.Compositor / D3D11 设备,
+  # 使 CoreMessaging/dcomp 常驻进程,在部分 Windows 版本(build 26300)上
+  # 触发 coremessaging.dll 0xc0000005 进程崩溃(dump 栈已证实)。
+  # fork 补丁把这段初始化推迟到首次创建 WebView(抖音搜索页)时。
+  # 上游若合并等价修复后可移除: https://github.com/pichillilorenzo/flutter_inappwebview
+  flutter_inappwebview_windows:
+    git:
+      url: https://github.com/ViperJooy/flutter_inappwebview.git
+      path: flutter_inappwebview_windows
+      ref: e6721a64f5c885793f8f8f819f15d2473fd285df
+
 flutter_launcher_icons:
   android: true
   ios: true
