@@ -50,6 +50,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: master
+      - name: Generate debug keystore for TV
+        run: |
+          keytool -genkeypair -v -keystore "$GITHUB_WORKSPACE/tvkey.jks" -alias tvkey \
+            -keyalg RSA -keysize 2048 -validity 36500 -storepass simplelive -keypass simplelive \
+            -dname "CN=SimpleLive TV, OU=Dev, O=Dev, L=Net, ST=Net, C=CN"
+          echo "storeFile=$GITHUB_WORKSPACE/tvkey.jks" > simple_live_tv_app/android/key.properties
+          echo "storePassword=simplelive" >> simple_live_tv_app/android/key.properties
+          echo "keyPassword=simplelive" >> simple_live_tv_app/android/key.properties
+          echo "keyAlias=tvkey" >> simple_live_tv_app/android/key.properties
       - uses: actions/setup-java@v4
         with:
           distribution: "zulu"
