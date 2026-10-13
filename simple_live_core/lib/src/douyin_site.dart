@@ -44,24 +44,66 @@ class DouyinSite implements LiveSite {
     "User-Agent": kDefaultUserAgent,
   };
 
-  Future<Map<String, dynamic>> getRequestHeaders() async {
-    try {
-      // 如果用户已设置 cookie，直接使用用户的 cookie
-      if (cookie.isNotEmpty) {
-        headers["cookie"] = cookie;
-        return headers;
-      }
+  /// 动态获取的 Cookie（ttwid 等），替代硬编码的过期 ttwid
+  String _dynamicCookie = "";
+  DateTime? _dynamicCookieTime;
+  Future<String>? _cookieRefreshFuture;
 
-      // 使用默认的 ttwid cookie（只需要 ttwid 即可获取所有画质）
-      headers["cookie"] = kDefaultCookie;
+  Future<Map<String, dynamic>> getRequestHeaders() async {
+    // 如果用户已设置 cookie，直接使用用户的 cookie
+    if (cookie.isNotEmpty) {
+      headers["cookie"] = cookie;
       return headers;
+    }
+
+    // 优先使用动态获取的 ttwid cookie，硬编码 ttwid 仅作为兜底
+    try {
+      headers["cookie"] = await _getDynamicCookie();
     } catch (e) {
       CoreLog.error(e);
       if (!(headers["cookie"]?.toString().isNotEmpty ?? false)) {
         headers["cookie"] = kDefaultCookie;
       }
-      return headers;
     }
+    return headers;
+  }
+
+  /// 通过 HEAD 请求动态获取 ttwid 等 Cookie，缓存 12 小时
+  /// - [forceRefresh] 强制刷新（接口疑似被风控拦截时使用）
+  Future<String> _getDynamicCookie({bool forceRefresh = false}) {
+    if (!forceRefresh &&
+        _dynamicCookie.isNotEmpty &&
+        _dynamicCookieTime != null &&
+        DateTime.now().difference(_dynamicCookieTime!).inHours < 12) {
+      return Future.value(_dynamicCookie);
+    }
+    // 防止并发请求时重复刷新
+    return _cookieRefreshFuture ??= _fetchDynamicCookie()
+        .whenComplete(() => _cookieRefreshFuture = null);
+  }
+
+  Future<String> _fetchDynamicCookie() async {
+    var requestHeaders = Map<String, dynamic>.from(headers)..remove("cookie");
+    var headResp = await HttpClient.instance.head(
+      "https://live.douyin.com",
+      header: requestHeaders,
+    );
+    var dyCookie = "";
+    headResp.headers["set-cookie"]?.forEach((element) {
+      var item = element.split(";")[0];
+      if (item.contains("ttwid") ||
+          item.contains("__ac_nonce") ||
+          item.contains("msToken")) {
+        dyCookie += "$item;";
+      }
+    });
+    if (dyCookie.isEmpty) {
+      throw Exception("未能从抖音获取到 Cookie");
+    }
+    _dynamicCookie = dyCookie;
+    _dynamicCookieTime = DateTime.now();
+    _logDebug("动态 Cookie 已更新");
+    return dyCookie;
   }
 
   @override
@@ -466,6 +508,12 @@ class DouyinSite implements LiveSite {
           r'\{\\"state\\":\{\\"appStore.*?\]\\n',
         ).firstMatch(result)?.group(0) ??
         "";
+    if (renderData.isEmpty) {
+      _logDebug(
+        "RENDER_DATA 匹配失败，页面长度: ${result.length}，片段: ${result.substring(0, min(result.length, 200))}",
+      );
+      throw Exception("抖音直播页解析失败，可能触发验证码或页面结构已变更");
+    }
     var str = renderData
         .trim()
         .replaceAll('\\"', '"')
@@ -477,7 +525,8 @@ class DouyinSite implements LiveSite {
 
   /// 通过webRid获取直播间Web信息
   /// - [webRid] 直播间RID
-  Future<Map> _getRoomDataByApi(String webRid) async {
+  /// - [isRetry] 是否为刷新 Cookie 后的重试
+  Future<Map> _getRoomDataByApi(String webRid, {bool isRetry = false}) async {
     String serverUrl = "https://live.douyin.com/webcast/room/web/enter/";
 
     // 提前获取 headers
@@ -514,7 +563,24 @@ class DouyinSite implements LiveSite {
       throw Exception("抖音接口返回格式异常");
     }
 
-    return result["data"];
+    var data = result["data"];
+    var roomList = data is Map ? data["data"] : null;
+    if (roomList is! List || roomList.isEmpty) {
+      // 接口未返回房间数据，大概率是签名失效或触发风控，记录响应片段便于诊断
+      var snippet = json.encode(result);
+      _logDebug(
+        "enter 接口返回异常: ${snippet.substring(0, min(snippet.length, 300))}",
+      );
+      // 使用动态 Cookie 时，强制刷新后重试一次；用户自带 Cookie 时重试无意义
+      if (!isRetry && cookie.isEmpty) {
+        _logDebug("强制刷新 Cookie 后重试 enter 接口");
+        await _getDynamicCookie(forceRefresh: true);
+        return _getRoomDataByApi(webRid, isRetry: true);
+      }
+      throw Exception("抖音接口未返回直播间数据，可能触发风控验证");
+    }
+
+    return data;
   }
 
   /// 通过roomId获取直播间信息
