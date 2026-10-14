@@ -247,6 +247,19 @@ jobs:
           if [ -d simple_live_tv-android-apk ]; then
             for f in simple_live_tv-android-apk/app-*.apk; do mv "$f" "simple_live_tv-$(basename $f)"; done
           fi
+          # Linux / macOS 带版本号的产物改成固定名，保证每次构建都是覆盖同一批文件
+          if [ -d simple_live_app-linux ]; then
+            mv simple_live_app-linux/*.deb simple_live_app-linux/simple_live_app-linux.deb 2>/dev/null || true
+            mv simple_live_app-linux/*.zip simple_live_app-linux/simple_live_app-linux.zip 2>/dev/null || true
+          fi
+          if [ -d simple_live_app-macos ]; then
+            mv simple_live_app-macos/*.dmg simple_live_app-macos/simple_live_app-macos.dmg 2>/dev/null || true
+            mv simple_live_app-macos/*.zip simple_live_app-macos/simple_live_app-macos.zip 2>/dev/null || true
+          fi
+          # iOS 固定名
+          if [ -f simple_live_app-ios/ios_no_sign.ipa ]; then
+            mv simple_live_app-ios/ios_no_sign.ipa simple_live_app-ios/simple_live_app-ios.ipa
+          fi
           find . -type f | sort
 
       - name: Upload to OpenList
