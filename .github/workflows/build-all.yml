@@ -3,6 +3,9 @@ name: Build All Platforms
 on:
   workflow_dispatch:
 
+permissions:
+  actions: read
+
 jobs:
   build-android:
     runs-on: ubuntu-22.04
@@ -222,3 +225,45 @@ jobs:
         with:
           name: simple_live_console-windows-x64
           path: simple_live_console/build/simple_live_console-windows-x64.zip
+
+  upload-openlist:
+    needs: [build-android, build-tv, build-windows, build-linux, build-macos, build-ios, build-console]
+    if: github.repository_owner == 'ViperJooy'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download all artifacts (keep per-artifact dirs)
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Rename and collect files
+        run: |
+          cd artifacts
+          # 手机 APK
+          if [ -d simple_live_app-android-apk ]; then
+            for f in simple_live_app-android-apk/app-*.apk; do mv "$f" "simple_live_app-$(basename $f)"; done
+          fi
+          # TV APK
+          if [ -d simple_live_tv-android-apk ]; then
+            for f in simple_live_tv-android-apk/app-*.apk; do mv "$f" "simple_live_tv-$(basename $f)"; done
+          fi
+          find . -type f | sort
+
+      - name: Upload to OpenList
+        env:
+          OL_AUTH: ${{ secrets.OPENLIST_TOKEN }}
+        run: |
+          set -e
+          BASE="https://alist.viper.pub"
+          DIR="/localhost/apk/simple_live"
+          find artifacts -type f | while read -r f; do
+            name=$(basename "$f")
+            upath=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$DIR/$name")
+            echo "upload $name"
+            curl -sf -m 1800 -X PUT "$BASE/api/fs/put" \
+              -H "Authorization: $OL_AUTH" \
+              -H "File-Path: $upath" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"$f"
+            echo
+          done
