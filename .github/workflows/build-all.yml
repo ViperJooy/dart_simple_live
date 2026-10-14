@@ -236,30 +236,21 @@ jobs:
         with:
           path: artifacts
 
-      - name: Rename and collect files
+      - name: Rename to fixed filenames
         run: |
           cd artifacts
-          # 手机 APK
-          if [ -d simple_live_app-android-apk ]; then
-            for f in simple_live_app-android-apk/app-*.apk; do mv "$f" "simple_live_app-$(basename $f)"; done
-          fi
-          # TV APK
-          if [ -d simple_live_tv-android-apk ]; then
-            for f in simple_live_tv-android-apk/app-*.apk; do mv "$f" "simple_live_tv-$(basename $f)"; done
-          fi
-          # Linux / macOS 带版本号的产物改成固定名，保证每次构建都是覆盖同一批文件
-          if [ -d simple_live_app-linux ]; then
-            mv simple_live_app-linux/*.deb simple_live_app-linux/simple_live_app-linux.deb 2>/dev/null || true
-            mv simple_live_app-linux/*.zip simple_live_app-linux/simple_live_app-linux.zip 2>/dev/null || true
-          fi
-          if [ -d simple_live_app-macos ]; then
-            mv simple_live_app-macos/*.dmg simple_live_app-macos/simple_live_app-macos.dmg 2>/dev/null || true
-            mv simple_live_app-macos/*.zip simple_live_app-macos/simple_live_app-macos.zip 2>/dev/null || true
-          fi
-          # iOS 固定名
-          if [ -f simple_live_app-ios/ios_no_sign.ipa ]; then
-            mv simple_live_app-ios/ios_no_sign.ipa simple_live_app-ios/simple_live_app-ios.ipa
-          fi
+          # 递归查找并统一改名为固定文件名（每次构建覆盖同名文件）
+          while IFS= read -r f; do mv "$f" "$(dirname "$f")/simple_live_app-arm64.apk"; done < <(find simple_live_app-android-apk -name '*arm64*.apk' 2>/dev/null)
+          while IFS= read -r f; do mv "$f" "$(dirname "$f")/simple_live_app-armv7.apk";  done < <(find simple_live_app-android-apk -name '*armeabi*.apk' 2>/dev/null)
+          while IFS= read -r f; do mv "$f" "$(dirname "$f")/simple_live_app-x86_64.apk"; done < <(find simple_live_app-android-apk -name '*x86_64*.apk' 2>/dev/null)
+          while IFS= read -r f; do mv "$f" "$(dirname "$f")/simple_live_tv-arm64.apk";  done < <(find simple_live_tv-android-apk -name '*arm64*.apk' 2>/dev/null)
+          while IFS= read -r f; do mv "$f" "$(dirname "$f")/simple_live_tv-armv7.apk";  done < <(find simple_live_tv-android-apk -name '*armeabi*.apk' 2>/dev/null)
+          while IFS= read -r f; do mv "$f" "$(dirname "$f")/simple_live_tv-x86_64.apk"; done < <(find simple_live_tv-android-apk -name '*x86_64*.apk' 2>/dev/null)
+          while IFS= read -r f; do mv "$f" "$(dirname "$f")/simple_live_app-linux.deb"; done < <(find simple_live_app-linux -name '*.deb' 2>/dev/null)
+          while IFS= read -r f; do mv "$f" "$(dirname "$f")/simple_live_app-linux.zip"; done < <(find simple_live_app-linux -name '*.zip' 2>/dev/null)
+          while IFS= read -r f; do mv "$f" "$(dirname "$f")/simple_live_app-macos.dmg"; done < <(find simple_live_app-macos -name '*.dmg' 2>/dev/null)
+          while IFS= read -r f; do mv "$f" "$(dirname "$f")/simple_live_app-macos.zip"; done < <(find simple_live_app-macos -name '*.zip' 2>/dev/null)
+          while IFS= read -r f; do mv "$f" "$(dirname "$f")/simple_live_app-ios.ipa";  done < <(find simple_live_app-ios -name '*.ipa' 2>/dev/null)
           find . -type f | sort
 
       - name: Upload to OpenList
