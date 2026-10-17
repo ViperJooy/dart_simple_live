@@ -89,7 +89,7 @@ class OtherSettingsController extends BaseController {
     super.onInit();
   }
 
-  void setLogEnable(e) {
+  Future<void> setLogEnable(e) async {
     AppSettingsController.instance.setLogEnable(e);
     if (e) {
       Log.initWriter();
@@ -97,11 +97,11 @@ class OtherSettingsController extends BaseController {
         loadLogFiles();
       });
     } else {
-      Log.disposeWriter();
+      await Log.disposeWriter();
     }
   }
 
-  void loadLogFiles() async {
+  Future<void> loadLogFiles() async {
     var supportDir = await getApplicationSupportDirectory();
     var logDir = Directory("${supportDir.path}/log");
     if (!await logDir.exists()) {
@@ -119,18 +119,27 @@ class OtherSettingsController extends BaseController {
     logFiles.sort((a, b) => b.time.compareTo(a.time));
   }
 
-  void cleanLog() async {
-    if (AppSettingsController.instance.logEnable.value) {
-      SmartDialog.showToast("请先关闭日志记录");
-      return;
+  Future<void> cleanLog() async {
+    final resumeLogging = AppSettingsController.instance.logEnable.value;
+    try {
+      // Windows 不能删除仍被占用的日志，必须先等待当前进程的写入句柄关闭。
+      await Log.disposeWriter();
+      var supportDir = await getApplicationSupportDirectory();
+      var logDir = Directory("${supportDir.path}/log");
+      if (await logDir.exists()) {
+        await logDir.delete(recursive: true);
+      }
+      SmartDialog.showToast("日志已清空");
+    } catch (e) {
+      Log.logPrint("清空日志失败: $e", false);
+      SmartDialog.showToast("清空失败，请关闭所有直播间窗口后重试");
+    } finally {
+      // 清空前日志记录处于开启状态时，恢复记录，但设置开关保持不变。
+      if (resumeLogging) {
+        Log.initWriter();
+      }
+      await loadLogFiles();
     }
-
-    var supportDir = await getApplicationSupportDirectory();
-    var logDir = Directory("${supportDir.path}/log");
-    if (await logDir.exists()) {
-      await logDir.delete(recursive: true);
-    }
-    loadLogFiles();
   }
 
   void shareLogFile(LogFileModel item) {
