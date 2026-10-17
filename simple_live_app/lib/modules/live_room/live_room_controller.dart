@@ -581,10 +581,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     }
 
     Log.d("播放结束");
-    // 遍历线路，如果全部链接都断开就是直播结束了
-    if (playUrls.length - 1 == currentLineIndex) {
-      liveStatus.value = false;
-    } else {
+    // 所有播放线路断开不等于主播已经下播。尤其是斗鱼签名地址到期时，
+    // 若在这里把 liveStatus 置为 false，缓冲看门狗会被永久禁用，页面一直转圈。
+    // 是否下播应以房间接口状态为准，这里保留直播状态以便继续拉取新地址。
+    if (playUrls.length - 1 != currentLineIndex) {
       changePlayLine(currentLineIndex + 1);
     }
   }
