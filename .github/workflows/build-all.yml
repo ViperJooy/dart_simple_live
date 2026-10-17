@@ -8,8 +8,6 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: master
       - name: Download Android keystore
         id: android_keystore
         uses: timheuer/base64-to-file@v1.2
@@ -48,8 +46,6 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: master
       - name: Generate debug keystore for TV
         run: |
           keytool -genkeypair -v -keystore "$GITHUB_WORKSPACE/tvkey.jks" -alias tvkey \
@@ -85,8 +81,6 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: master
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -115,8 +109,6 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: master
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -146,8 +138,6 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: master
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -177,8 +167,6 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: master
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
