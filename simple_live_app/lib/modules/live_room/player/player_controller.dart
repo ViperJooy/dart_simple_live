@@ -32,6 +32,10 @@ mixin PlayerMixin {
   late final player = Player(
     configuration: PlayerConfiguration(
       title: "Simple Live Player",
+      // Windows/macOS 上 async=true 时，同一个 Player 第二次 open 可能报
+      // Unable to load playlist，导致断流重拉后永久黑屏。同步执行 mpv 命令，
+      // 保证 open 内部命令按序完成；其他平台沿用 media_kit 默认的异步模式。
+      async: !(Platform.isWindows || Platform.isMacOS),
       logLevel: AppSettingsController.instance.logEnable.value
           ? MPVLogLevel.info
           : MPVLogLevel.error,
