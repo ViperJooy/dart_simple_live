@@ -448,9 +448,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 与断流重试共用 [_refreshingPlayUrls] 这把锁：切线路同样会触发
   /// player.jump，若与重试并发会把 mpv 的 playlist 状态搅乱。
   Future<void> changePlayLine(int index) async {
-    if (_refreshingPlayUrls) {
+    if (_streamRecoveryStopped || _refreshingPlayUrls) {
       return;
     }
+    _retryPending = false;
     _refreshingPlayUrls = true;
     try {
       currentLineIndex = index;
@@ -465,8 +466,13 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 是否正在刷新播放地址（避免断流重试与缓冲看门狗并发刷新）
   var _refreshingPlayUrls = false;
 
-  /// 上次重试的时间戳，用于重试冷却
-  var _lastRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
+  /// 冷却期间的断流信号合并为一次延后重试，不再跳转回已失效的旧地址。
+  Timer? _retryCooldownTimer;
+  var _retryPending = false;
+  var _streamRecoveryStopped = false;
+
+  bool get _streamRecoveryPaused =>
+      isBackground && AppSettingsController.instance.playerAutoPause.value;
 
   /// 重试冷却时间
   ///
@@ -480,25 +486,48 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   ///
   /// 所有触发源（mediaEnd、mediaError、缓冲看门狗）都必须汇聚到这里，
   /// 由 [_refreshingPlayUrls] 串行化，并经过 [_retryCooldown] 冷却。
-  /// 返回 true 表示已经发起了一次重拉流。
+  /// 返回 true 表示已发起、合并或安排重拉流，不应再重放旧地址。
   Future<bool> handleStreamStall() async {
-    // 已有重拉流在进行中，直接忽略，避免并发 open
+    if (_streamRecoveryStopped ||
+        !liveStatus.value ||
+        detail.value == null ||
+        qualites.isEmpty) {
+      return false;
+    }
+    if (_streamRecoveryPaused) {
+      _retryPending = true;
+      return true;
+    }
     if (_refreshingPlayUrls) {
       Log.d("已有重拉流在进行，忽略本次断流信号");
-      return false;
+      return true;
     }
-    // 冷却期内不重复重拉
-    final now = DateTime.now();
-    if (now.difference(_lastRetryAt) < _retryCooldown) {
-      Log.d("重试冷却中，${_retryCooldown.inSeconds - now.difference(_lastRetryAt).inSeconds}s 后再试");
-      return false;
+    if (_retryCooldownTimer?.isActive ?? false) {
+      Log.d("重试冷却中，已安排冷却结束后重拉");
+      _retryPending = true;
+      return true;
     }
-    // 未开播 / 尚未拿到详情 / 清晰度为空时不重拉
-    if (!liveStatus.value || detail.value == null || qualites.isEmpty) {
-      return false;
+    _retryPending = false;
+    _startRetryCooldown();
+    final refreshed = await refreshPlayUrls();
+    if (!refreshed && !_streamRecoveryStopped) {
+      // EOF 后可能已没有缓冲事件；接口暂时失败也必须保留下一次恢复机会。
+      _retryPending = true;
+      if (!(_retryCooldownTimer?.isActive ?? false)) {
+        _startRetryCooldown();
+      }
     }
-    _lastRetryAt = now;
-    return refreshPlayUrls();
+    return refreshed;
+  }
+
+  void _startRetryCooldown() {
+    _retryCooldownTimer?.cancel();
+    _retryCooldownTimer = Timer(_retryCooldown, () {
+      if (_retryPending) {
+        _retryPending = false;
+        handleStreamStall();
+      }
+    });
   }
 
   /// 重新请求播放地址并刷新播放
@@ -510,7 +539,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 若在 open 调用前后立刻解锁，三个断流触发源会各自并发拉一次地址、
   /// 各自 open 一次，mpv 的 playlist 状态会被搅乱。
   Future<bool> refreshPlayUrls() async {
-    if (_refreshingPlayUrls) {
+    if (_streamRecoveryStopped || _refreshingPlayUrls) {
       return false;
     }
     _refreshingPlayUrls = true;
@@ -519,8 +548,12 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         detail: detail.value!,
         quality: qualites[currentQuality],
       );
-      if (playUrl.urls.isEmpty) {
+      if (_streamRecoveryStopped || playUrl.urls.isEmpty) {
         return false;
+      }
+      if (_streamRecoveryPaused) {
+        _retryPending = true;
+        return true;
       }
       playUrls.value = playUrl.urls;
       playHeaders = playUrl.headers;
@@ -552,8 +585,13 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
     // 初始化播放器并设置 ao 参数
     await initializePlayer();
+    if (_streamRecoveryStopped) return;
+    if (_streamRecoveryPaused) {
+      _retryPending = true;
+      return;
+    }
 
-    await player.open(Playlist(mediaList));
+    await player.open(Playlist(mediaList, index: currentLineIndex));
   }
 
   Future<void> setPlayer() async {
@@ -565,6 +603,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   @override
   void mediaEnd() async {
+    // open 过程中旧流也可能发出 EOF，不得再 jump 打断正在加载的新流。
+    if (_streamRecoveryStopped || _refreshingPlayUrls) return;
     super.mediaEnd();
     if (mediaErrorRetryCount < 2) {
       Log.d("播放结束，尝试第${mediaErrorRetryCount + 1}次刷新");
@@ -573,10 +613,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         await Future.delayed(const Duration(seconds: 1));
       }
       mediaErrorRetryCount += 1;
-      //统一走串行化入口，失败则重放当前地址
-      if (!await handleStreamStall()) {
-        setPlayer();
-      }
+      // 失败和冷却都由统一入口安排重试，不能重放旧地址或关闭后的播放器。
+      await handleStreamStall();
       return;
     }
 
@@ -586,12 +624,15 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     // 是否下播应以房间接口状态为准，这里保留直播状态以便继续拉取新地址。
     if (playUrls.length - 1 != currentLineIndex) {
       changePlayLine(currentLineIndex + 1);
+    } else {
+      await handleStreamStall();
     }
   }
 
   int mediaErrorRetryCount = 0;
   @override
   void mediaError(String error) async {
+    if (_streamRecoveryStopped || _refreshingPlayUrls) return;
     super.mediaError(error);
     if (mediaErrorRetryCount < 2) {
       Log.d("播放失败，尝试第${mediaErrorRetryCount + 1}次刷新");
@@ -600,16 +641,15 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         await Future.delayed(const Duration(seconds: 1));
       }
       mediaErrorRetryCount += 1;
-      //统一走串行化入口，失败则重放当前地址
-      if (!await handleStreamStall()) {
-        setPlayer();
-      }
+      // 失败和冷却都由统一入口安排重试，不能重放旧地址或关闭后的播放器。
+      await handleStreamStall();
       return;
     }
 
     if (playUrls.length - 1 == currentLineIndex) {
       errorMsg.value = "播放失败";
       SmartDialog.showToast("播放失败:$error");
+      await handleStreamStall();
     } else {
       changePlayLine(currentLineIndex + 1);
     }
@@ -1128,7 +1168,8 @@ ${error?.stackTrace}''');
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
 
-    if (state == AppLifecycleState.paused) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
       Log.d("进入后台");
       //进入后台，关闭弹幕
       danmakuController?.clear();
@@ -1138,6 +1179,7 @@ ${error?.stackTrace}''');
     if (state == AppLifecycleState.resumed) {
       Log.d("返回前台");
       isBackground = false;
+      if (_retryPending) handleStreamStall();
     }
   }
 
@@ -1173,13 +1215,21 @@ ${error?.stackTrace}''');
   }
 
   @override
+  void disposeStream() {
+    _streamRecoveryStopped = true;
+    _retryPending = false;
+    _retryCooldownTimer?.cancel();
+    _playingRetrySubscription?.cancel();
+    _bufferingSubscription?.cancel();
+    _bufferingWatchdog?.cancel();
+    super.disposeStream();
+  }
+
+  @override
   void onClose() {
     WidgetsBinding.instance.removeObserver(this);
     scrollController.removeListener(scrollListener);
     autoExitTimer?.cancel();
-    _playingRetrySubscription?.cancel();
-    _bufferingSubscription?.cancel();
-    _bufferingWatchdog?.cancel();
 
     liveDanmaku.stop();
     danmakuController = null;

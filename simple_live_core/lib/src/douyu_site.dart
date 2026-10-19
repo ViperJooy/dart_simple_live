@@ -95,7 +95,7 @@ class DouyuSite implements LiveSite {
   Future<List<LivePlayQuality>> getPlayQualites({
     required LiveRoomDetail detail,
   }) async {
-    var data = detail.data.toString();
+    var data = await _getPlaySign(detail.roomId);
     data += "&cdn=&rate=-1&ver=Douyu_223061205&iar=1&ive=1&hevc=0&fa=0";
     List<LivePlayQuality> qualities = [];
     var result = await HttpClient.instance.postJson(
@@ -135,7 +135,8 @@ class DouyuSite implements LiveSite {
     required LiveRoomDetail detail,
     required LivePlayQuality quality,
   }) async {
-    var args = detail.data.toString();
+    // 房间详情可能已缓存很久；重拉必须重新签名，不能复用进入房间时的 tt/sign。
+    var args = await _getPlaySign(detail.roomId);
     var data = quality.data as DouyuPlayData;
 
     List<String> urls = [];
@@ -209,16 +210,7 @@ class DouyuSite implements LiveSite {
     );
     String? showTime = h5RoomInfo["data"]?["show_time"]?.toString();
 
-    var jsEncResult = await HttpClient.instance.getText(
-      "https://www.douyu.com/swf_api/homeH5Enc?rids=$roomId",
-      queryParameters: {},
-      header: {
-        'referer': 'https://www.douyu.com/$roomId',
-        'user-agent':
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43",
-      },
-    );
-    var crptext = json.decode(jsEncResult)["data"]["room$roomId"].toString();
+    var sign = await _getPlaySign(roomInfo["room_id"].toString());
 
     if (showTime != null && showTime.isNotEmpty) {
       try {
@@ -249,7 +241,7 @@ class DouyuSite implements LiveSite {
       notice: "",
       status: roomInfo["show_status"] == 1 && roomInfo["videoLoop"] != 1,
       danmakuData: roomInfo["room_id"].toString(),
-      data: DouyuSign.getSign(crptext, roomInfo["room_id"].toString()),
+      data: sign,
       url: "https://www.douyu.com/$roomId",
       isRecord: roomInfo["videoLoop"] == 1,
       showTime: showTime,
@@ -288,6 +280,20 @@ class DouyuSite implements LiveSite {
     }
     var hasMore = result["data"]["relateShow"].isNotEmpty;
     return LiveSearchRoomResult(hasMore: hasMore, items: items);
+  }
+
+  Future<String> _getPlaySign(String roomId) async {
+    var jsEncResult = await HttpClient.instance.getText(
+      "https://www.douyu.com/swf_api/homeH5Enc?rids=$roomId",
+      queryParameters: {},
+      header: {
+        'referer': 'https://www.douyu.com/$roomId',
+        'user-agent':
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43",
+      },
+    );
+    var script = json.decode(jsEncResult)["data"]["room$roomId"].toString();
+    return DouyuSign.getSign(script, roomId);
   }
 
   Future<Map> _getRoomInfo(String roomId) async {
