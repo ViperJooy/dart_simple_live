@@ -553,15 +553,24 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       // 其他平台沿用旧 detail，避免频繁请求房间接口
       LiveRoomDetail currentDetail;
       if (site.id == "huya") {
-        currentDetail = await site.liveSite.getRoomDetail(roomId: roomId);
-        detail.value = currentDetail;
-        // 重新获取清晰度列表，确保 qualites 和新 detail 匹配
-        final newQualites = await site.liveSite.getPlayQualites(detail: currentDetail);
-        if (newQualites.isNotEmpty) {
-          qualites.value = newQualites;
-          if (currentQuality >= qualites.length) {
-            currentQuality = qualites.length - 1;
+        final newDetail = await site.liveSite.getRoomDetail(roomId: roomId);
+        final newData = newDetail.data as HuyaUrlDataModel;
+        // 如果新 detail 的线路为空，保留旧 detail 的线路（虎牙接口有时会返回空）
+        if (newData.lines.isNotEmpty) {
+          currentDetail = newDetail;
+          detail.value = newDetail;
+          // 重新获取清晰度列表，确保 qualites 和新 detail 匹配
+          final newQualites = await site.liveSite.getPlayQualites(detail: currentDetail);
+          if (newQualites.isNotEmpty) {
+            qualites.value = newQualites;
+            if (currentQuality >= qualites.length) {
+              currentQuality = qualites.length - 1;
+            }
           }
+        } else {
+          // 新 detail 线路为空，沿用旧 detail，只重新生成签名
+          Log.d("虎牙房间接口返回空线路，沿用旧线路重新签名");
+          currentDetail = detail.value!;
         }
       } else {
         currentDetail = detail.value!;
