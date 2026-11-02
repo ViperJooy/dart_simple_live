@@ -217,14 +217,19 @@ class HuyaSite implements LiveSite {
     }
     // 最新UA需要额外验证，此方法暂时弃用
     // var ua = await getHuYaUA();
-    return LivePlayUrl(urls: ls, headers: {"user-agent": HYSDK_UA});
+    // 虎牙 HLS 需要浏览器 UA，HYSDK UA 会被 CDN 限流（1秒断流）
+    return LivePlayUrl(
+      urls: ls,
+      headers: {"user-agent": kUserAgent},
+    );
   }
 
   Future<String> getPlayUrl(HuyaLineModel line, int bitRate, String uid) async {
-    // 房间页线路已包含 FLV anticode。优先用该数据本地签名，避免
-    // getCdnTokenInfoEx 在部分房间/网络被 Huya 返回 403 时整组线路失效。
-    final antiCode = processAnticode(line.flvAntiCode, uid, line.streamName);
-    var url = '${line.line}/${line.streamName}.flv?$antiCode&codec=264';
+    // 虎牙 FLV 长连接会被 CDN 主动掐断（6-7秒），改用 HLS(m3u8) 分片播放更稳定。
+    // HS 线路的 HLS 实测可用，其他线路可能 403，由播放器自动切换线路。
+    // 注意：HLS 使用 hls.huya.com 域名，flv.huya.com 只支持 FLV。
+    final antiCode = processAnticode(line.hlsAntiCode, uid, line.streamName);
+    var url = '${line.line.replaceAll('.flv.huya.com', '.hls.huya.com')}/${line.streamName}.m3u8?$antiCode';
     if (bitRate > 0) {
       url += "&ratio=$bitRate";
     }
