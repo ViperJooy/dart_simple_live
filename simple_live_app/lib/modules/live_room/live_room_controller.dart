@@ -628,9 +628,11 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     // open 过程中旧流也可能发出 EOF，不得再 jump 打断正在加载的新流。
     if (_streamRecoveryStopped || _refreshingPlayUrls) return;
     super.mediaEnd();
-    if (mediaErrorRetryCount < 2) {
+    // 虎牙断流后需要更多重试，因为 CDN 节点恢复需要时间
+    final maxRetry = site.id == "huya" ? 5 : 2;
+    if (mediaErrorRetryCount < maxRetry) {
       Log.d("播放结束，尝试第${mediaErrorRetryCount + 1}次刷新");
-      if (mediaErrorRetryCount == 1) {
+      if (mediaErrorRetryCount >= 1) {
         //延迟一秒再刷新
         await Future.delayed(const Duration(seconds: 1));
       }
@@ -656,9 +658,11 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   void mediaError(String error) async {
     if (_streamRecoveryStopped || _refreshingPlayUrls) return;
     super.mediaError(error);
-    if (mediaErrorRetryCount < 2) {
+    // 虎牙断流后需要更多重试，因为 CDN 节点恢复需要时间
+    final maxRetry = site.id == "huya" ? 5 : 2;
+    if (mediaErrorRetryCount < maxRetry) {
       Log.d("播放失败，尝试第${mediaErrorRetryCount + 1}次刷新");
-      if (mediaErrorRetryCount == 1) {
+      if (mediaErrorRetryCount >= 1) {
         //延迟一秒再刷新
         await Future.delayed(const Duration(seconds: 1));
       }
