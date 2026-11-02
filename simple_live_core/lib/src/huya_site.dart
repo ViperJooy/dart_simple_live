@@ -225,11 +225,10 @@ class HuyaSite implements LiveSite {
   }
 
   Future<String> getPlayUrl(HuyaLineModel line, int bitRate, String uid) async {
-    // 虎牙 FLV 长连接会被 CDN 主动掐断（6-7秒），改用 HLS(m3u8) 分片播放更稳定。
-    // HS 线路的 HLS 实测可用，其他线路可能 403，由播放器自动切换线路。
-    // 注意：HLS 使用 hls.huya.com 域名，flv.huya.com 只支持 FLV。
-    final antiCode = processAnticode(line.hlsAntiCode, uid, line.streamName);
-    var url = '${line.line.replaceAll('.flv.huya.com', '.hls.huya.com')}/${line.streamName}.m3u8?$antiCode';
+    // 虎牙 FLV 长连接在正常使用下是稳定的，之前断流是 CDN 限流导致的误判。
+    // 恢复 FLV 播放，保留浏览器 UA 避免部分 CDN 节点的 UA 检测。
+    final antiCode = processAnticode(line.flvAntiCode, uid, line.streamName);
+    var url = '${line.line}/${line.streamName}.flv?$antiCode&codec=264';
     if (bitRate > 0) {
       url += "&ratio=$bitRate";
     }

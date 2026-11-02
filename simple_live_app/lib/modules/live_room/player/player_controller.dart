@@ -76,6 +76,11 @@ mixin PlayerMixin {
     if(Platform.isAndroid){
       await pp.setProperty('force-seekable', 'yes');
     }
+    // 直播流缓存优化：增大缓存应对网络波动，减少断流
+    await pp.setProperty('cache', 'yes');
+    await pp.setProperty('cache-secs', '10');
+    await pp.setProperty('demuxer-max-bytes', '50MiB');
+    await pp.setProperty('demuxer-max-back-bytes', '10MiB');
   }
 
   /// 视频控制器
