@@ -549,8 +549,25 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     }
     _refreshingPlayUrls = true;
     try {
+      // 虎牙断流可能是 CDN 节点问题，需要重新获取房间详情拿到最新线路
+      // 其他平台沿用旧 detail，避免频繁请求房间接口
+      LiveRoomDetail currentDetail;
+      if (site.id == "huya") {
+        currentDetail = await site.liveSite.getRoomDetail(roomId: roomId);
+        detail.value = currentDetail;
+        // 重新获取清晰度列表，确保 qualites 和新 detail 匹配
+        final newQualites = await site.liveSite.getPlayQualites(detail: currentDetail);
+        if (newQualites.isNotEmpty) {
+          qualites.value = newQualites;
+          if (currentQuality >= qualites.length) {
+            currentQuality = qualites.length - 1;
+          }
+        }
+      } else {
+        currentDetail = detail.value!;
+      }
       var playUrl = await site.liveSite.getPlayUrls(
-        detail: detail.value!,
+        detail: currentDetail,
         quality: qualites[currentQuality],
       );
       if (_streamRecoveryStopped || playUrl.urls.isEmpty) {
