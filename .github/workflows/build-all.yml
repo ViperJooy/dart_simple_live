@@ -165,6 +165,8 @@ jobs:
 
   build-ios:
     runs-on: macos-latest
+    # 与 build-macos 串行执行，避免 macOS runner 并发被取消
+    needs: build-macos
     steps:
       - uses: actions/checkout@v4
       - name: Setup Flutter
