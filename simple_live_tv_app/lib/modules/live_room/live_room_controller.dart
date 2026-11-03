@@ -249,6 +249,41 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     //重置错误次数
     mediaErrorRetryCount = 0;
     setPlayer();
+    // 斗鱼：启动定期刷新定时器，在签名到期前主动续期
+    _startDouyuRefreshTimer();
+  }
+
+  /// 斗鱼签名定期刷新定时器
+  ///
+  /// 斗鱼 CDN 的 FLV 连接约 300 秒被掐断，token 一次性。在 280 秒时主动
+  /// 重新签名并 open 新地址，避免 ffmpeg 用旧 token 重连失败。
+  /// 仅对斗鱼生效；每次刷新成功后重置定时器，形成循环。
+  Timer? _douyuRefreshTimer;
+
+  /// 斗鱼签名刷新周期（秒）
+  static const _douyuRefreshInterval = 280;
+
+  void _startDouyuRefreshTimer() {
+    if (site.id != "douyu") return;
+    _douyuRefreshTimer?.cancel();
+    _douyuRefreshTimer = Timer(
+      const Duration(seconds: _douyuRefreshInterval),
+      () async {
+        if (!liveStatus.value) return;
+        Log.d("斗鱼签名即将到期，主动刷新播放地址");
+        // 取消定时器，避免刷新期间重复触发；刷新成功后重启
+        _cancelDouyuRefreshTimer();
+        final refreshed = await refreshPlayUrls();
+        if (refreshed && liveStatus.value) {
+          _startDouyuRefreshTimer();
+        }
+      },
+    );
+  }
+
+  void _cancelDouyuRefreshTimer() {
+    _douyuRefreshTimer?.cancel();
+    _douyuRefreshTimer = null;
   }
 
   void changePlayLine(int index) {
@@ -511,6 +546,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     _playingRetrySubscription?.cancel();
     _bufferingSubscription?.cancel();
     _bufferingWatchdog?.cancel();
+    _cancelDouyuRefreshTimer();
     liveDanmaku.stop();
 
     danmakuController = null;

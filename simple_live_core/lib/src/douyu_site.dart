@@ -141,14 +141,23 @@ class DouyuSite implements LiveSite {
 
     List<String> urls = [];
     for (var item in data.cdns) {
-      var url = await getPlayUrl(detail.roomId, args, data.rate, item);
-      if (url.isNotEmpty) {
-        urls.add(url);
+      var result = await getPlayUrl(detail.roomId, args, data.rate, item);
+      if (result.isNotEmpty) {
+        // getPlayUrl 返回 "主URL|备用URL1|备用URL2"，展开成独立线路
+        // 播放器会按顺序尝试，主线断开时自动切换到备用节点
+        urls.addAll(result.split('|'));
       }
     }
     return LivePlayUrl(urls: urls);
   }
 
+  /// 获取指定 CDN 的播放地址
+  ///
+  /// 同时返回主 URL 和备用边缘节点 URL（来自 p2pMeta 的 dyxp2p_bak_edge /
+  /// dyxp2p_sug_egde）。备用节点与主节点共享同一 token，主线断开时可无缝切换，
+  /// 避免 CDN 掐断后 ffmpeg 用旧 token 重连失败（表现为卡在断流时刻）。
+  ///
+  /// 返回格式：主URL|备用URL1|备用URL2（用 | 分隔，由控制器解析）
   Future<String> getPlayUrl(
     String roomId,
     String args,
@@ -167,7 +176,39 @@ class DouyuSite implements LiveSite {
       formUrlEncoded: true,
     );
 
-    return "${result["data"]["rtmp_url"]}/${HtmlUnescape().convert(result["data"]["rtmp_live"].toString())}";
+    var data = result["data"] as Map;
+    var rtmpUrl = data["rtmp_url"].toString();
+    var rtmpLive = HtmlUnescape().convert(data["rtmp_live"].toString());
+    var mainUrl = "$rtmpUrl/$rtmpLive";
+
+    // 备用边缘节点：p2pMeta 里的 dyxp2p_bak_edge / dyxp2p_sug_egde
+    // 这些节点与主节点共享同一 token，切换时无需重新签名
+    var p2pMeta = data["p2pMeta"];
+    if (p2pMeta is Map) {
+      var bakEdge = p2pMeta["dyxp2p_bak_edge"]?.toString();
+      var sugEdge = p2pMeta["dyxp2p_sug_egde"]?.toString();
+      // 保留主 URL 的协议（http/https），备用节点复用同一协议
+      var scheme = rtmpUrl.startsWith('http://') ? 'http' : 'https';
+      var backupUrls = <String>[];
+      for (var edge in [bakEdge, sugEdge]) {
+        if (edge != null && edge.isNotEmpty) {
+          var backupUrl = rtmpUrl.replaceAll(
+            RegExp(r'https?://[^/]+'),
+            '$scheme://$edge',
+          );
+          var fullBackupUrl = "$backupUrl/$rtmpLive";
+          // 去重：备用节点可能与主线相同
+          if (fullBackupUrl != mainUrl && !backupUrls.contains(fullBackupUrl)) {
+            backupUrls.add(fullBackupUrl);
+          }
+        }
+      }
+      if (backupUrls.isNotEmpty) {
+        return "$mainUrl|${backupUrls.join('|')}";
+      }
+    }
+
+    return mainUrl;
   }
 
   @override

@@ -114,6 +114,19 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   var liveDuration = "00:00:00".obs;
   Timer? _liveDurationTimer;
 
+  /// 斗鱼签名地址定期刷新定时器
+  ///
+  /// 斗鱼 CDN 的 FLV 长连接会被服务端掐断（实测约 300 秒），且 token 一次性，
+  /// ffmpeg 的 reconnect 用旧 token 重连会失败。在到期前主动刷新签名，
+  /// 拿到新 token 后重新 open，避免卡在断流时刻。
+  ///
+  /// 刷新周期：280 秒（留 20 秒余量，避免刚好卡在 300 秒边界）
+  /// 仅对斗鱼生效，其他平台不启动此定时器。
+  Timer? _douyuRefreshTimer;
+
+  /// 斗鱼签名刷新周期（秒）
+  static const _douyuRefreshInterval = 280;
+
   @override
   void onInit() {
     WidgetsBinding.instance.addObserver(this);
@@ -442,10 +455,42 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       //重置错误次数
       mediaErrorRetryCount = 0;
       initPlaylist();
+      // 斗鱼：启动定期刷新定时器，在签名到期前主动续期
+      _startDouyuRefreshTimer();
     } catch (e, stackTrace) {
       Log.e("获取播放地址失败：$e", stackTrace);
       SmartDialog.showToast("获取播放地址失败，请查看日志");
     }
+  }
+
+  /// 启动斗鱼签名定期刷新定时器
+  ///
+  /// 斗鱼 CDN 的 FLV 连接约 300 秒被掐断，token 一次性。在 280 秒时主动
+  /// 重新签名并 open 新地址，避免 ffmpeg 用旧 token 重连失败。
+  /// 仅对斗鱼生效；每次刷新成功后重置定时器，形成循环。
+  /// 统一走 handleStreamStall，由它做串行化与冷却控制。
+  void _startDouyuRefreshTimer() {
+    if (site.id != "douyu") return;
+    _douyuRefreshTimer?.cancel();
+    _douyuRefreshTimer = Timer(
+      const Duration(seconds: _douyuRefreshInterval),
+      () async {
+        if (_streamRecoveryStopped || !liveStatus.value) return;
+        Log.d("斗鱼签名即将到期，主动刷新播放地址");
+        // 取消定时器，避免刷新期间重复触发；刷新成功后重启
+        _cancelDouyuRefreshTimer();
+        final refreshed = await handleStreamStall();
+        if (refreshed && !_streamRecoveryStopped && liveStatus.value) {
+          _startDouyuRefreshTimer();
+        }
+      },
+    );
+  }
+
+  /// 取消斗鱼签名定期刷新定时器
+  void _cancelDouyuRefreshTimer() {
+    _douyuRefreshTimer?.cancel();
+    _douyuRefreshTimer = null;
   }
 
   /// 切换线路
@@ -549,40 +594,11 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     }
     _refreshingPlayUrls = true;
     try {
-      // 虎牙断流可能是 CDN 节点问题，需要重新获取房间详情拿到最新线路
-      // 其他平台沿用旧 detail，避免频繁请求房间接口
       LiveRoomDetail currentDetail;
       if (site.id == "huya") {
-        final newDetail = await site.liveSite.getRoomDetail(roomId: roomId);
-        if (_streamRecoveryStopped) return false;
-        // 空线路可能是正常下播，不能丢弃接口明确返回的直播状态。
-        if (!newDetail.status) {
-          detail.value = newDetail;
-          liveStatus.value = false;
-          _retryPending = false;
-          _retryCooldownTimer?.cancel();
-          _bufferingWatchdog?.cancel();
-          errorMsg.value = "主播已下播";
-          return false;
-        }
-        final newData = newDetail.data as HuyaUrlDataModel;
-        // 如果新 detail 的线路为空，保留旧 detail 的线路（虎牙接口有时会返回空）
-        if (newData.lines.isNotEmpty) {
-          currentDetail = newDetail;
-          detail.value = newDetail;
-          // 重新获取清晰度列表，确保 qualites 和新 detail 匹配
-          final newQualites = await site.liveSite.getPlayQualites(detail: currentDetail);
-          if (newQualites.isNotEmpty) {
-            qualites.value = newQualites;
-            if (currentQuality >= qualites.length) {
-              currentQuality = qualites.length - 1;
-            }
-          }
-        } else {
-          // 新 detail 线路为空，沿用旧 detail，只重新生成签名
-          Log.d("虎牙房间接口返回空线路，沿用旧线路重新签名");
-          currentDetail = detail.value!;
-        }
+        final ok = await _refreshHuyaDetail();
+        if (!ok) return false;
+        currentDetail = detail.value!;
       } else {
         currentDetail = detail.value!;
       }
@@ -611,6 +627,42 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     } finally {
       _refreshingPlayUrls = false;
     }
+  }
+
+  /// 虎牙断流时重新获取房间详情与清晰度
+  ///
+  /// 返回 false 表示已下播或需要中止刷新。
+  Future<bool> _refreshHuyaDetail() async {
+    final newDetail = await site.liveSite.getRoomDetail(roomId: roomId);
+    if (_streamRecoveryStopped) return false;
+    // 空线路可能是正常下播，不能丢弃接口明确返回的直播状态。
+    if (!newDetail.status) {
+      detail.value = newDetail;
+      liveStatus.value = false;
+      _retryPending = false;
+      _retryCooldownTimer?.cancel();
+      _bufferingWatchdog?.cancel();
+      errorMsg.value = "主播已下播";
+      return false;
+    }
+    final newData = newDetail.data as HuyaUrlDataModel;
+    // 如果新 detail 的线路为空，保留旧 detail 的线路（虎牙接口有时会返回空）
+    if (newData.lines.isNotEmpty) {
+      detail.value = newDetail;
+      // 重新获取清晰度列表，确保 qualites 和新 detail 匹配
+      final newQualites =
+          await site.liveSite.getPlayQualites(detail: newDetail);
+      if (newQualites.isNotEmpty) {
+        qualites.value = newQualites;
+        if (currentQuality >= qualites.length) {
+          currentQuality = qualites.length - 1;
+        }
+      }
+    } else {
+      // 新 detail 线路为空，沿用旧 detail，只重新生成签名
+      Log.d("虎牙房间接口返回空线路，沿用旧线路重新签名");
+    }
+    return true;
   }
 
   Future<void> initPlaylist() async {
@@ -1268,6 +1320,7 @@ ${error?.stackTrace}''');
     _playingRetrySubscription?.cancel();
     _bufferingSubscription?.cancel();
     _bufferingWatchdog?.cancel();
+    _cancelDouyuRefreshTimer();
     super.disposeStream();
   }
 
@@ -1276,6 +1329,7 @@ ${error?.stackTrace}''');
     WidgetsBinding.instance.removeObserver(this);
     scrollController.removeListener(scrollListener);
     autoExitTimer?.cancel();
+    _cancelDouyuRefreshTimer();
 
     liveDanmaku.stop();
     danmakuController = null;
