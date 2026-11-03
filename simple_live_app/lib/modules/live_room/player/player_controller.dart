@@ -81,6 +81,11 @@ mixin PlayerMixin {
     await pp.setProperty('cache-secs', '10');
     await pp.setProperty('demuxer-max-bytes', '50MiB');
     await pp.setProperty('demuxer-max-back-bytes', '10MiB');
+    // ffmpeg 原生断流重连：CDN 掐断 FLV 长连接（实测约60-120秒）时，
+    // 自动重建连接继续拉流，普通房间完全无感。
+    // 热门房间会话作废导致 403 时，由上层 refreshPlayUrls 重新签名兜底。
+    await pp.setProperty('stream-lavf-o',
+        'reconnect=1,reconnect_streamed=1,reconnect_delay_max=2');
   }
 
   /// 视频控制器

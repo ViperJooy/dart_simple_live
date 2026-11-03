@@ -515,7 +515,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     _retryPending = false;
     _startRetryCooldown();
     final refreshed = await refreshPlayUrls();
-    if (!refreshed && !_streamRecoveryStopped) {
+    if (!refreshed && !_streamRecoveryStopped && liveStatus.value) {
       // EOF 后可能已没有缓冲事件；接口暂时失败也必须保留下一次恢复机会。
       _retryPending = true;
       if (!(_retryCooldownTimer?.isActive ?? false)) {
@@ -554,6 +554,17 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       LiveRoomDetail currentDetail;
       if (site.id == "huya") {
         final newDetail = await site.liveSite.getRoomDetail(roomId: roomId);
+        if (_streamRecoveryStopped) return false;
+        // 空线路可能是正常下播，不能丢弃接口明确返回的直播状态。
+        if (!newDetail.status) {
+          detail.value = newDetail;
+          liveStatus.value = false;
+          _retryPending = false;
+          _retryCooldownTimer?.cancel();
+          _bufferingWatchdog?.cancel();
+          errorMsg.value = "主播已下播";
+          return false;
+        }
         final newData = newDetail.data as HuyaUrlDataModel;
         // 如果新 detail 的线路为空，保留旧 detail 的线路（虎牙接口有时会返回空）
         if (newData.lines.isNotEmpty) {

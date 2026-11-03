@@ -67,6 +67,25 @@ void main() {
       addTearDown(Get.reset);
     });
 
+    test('虎牙接口确认下播后停止重拉，不重新签旧线路', () async {
+      final liveSite = _OfflineHuyaSite();
+      final platformPlayer = _RecordingPlatformPlayer();
+      final controller = _OfflineLiveRoomController(
+        liveSite, platformPlayer, siteId: 'huya',
+      );
+      addTearDown(controller.scrollController.dispose);
+      addTearDown(controller.player.dispose);
+      addTearDown(controller.disposeStream);
+      _seedLiveRoom(controller);
+
+      await controller.handleStreamStall();
+
+      expect(controller.liveStatus.value, isFalse);
+      expect(liveSite.playRequests, 0,
+          reason: '接口已确认下播，不能继续使用旧线路重签名');
+      expect(platformPlayer.opened, isEmpty);
+    });
+
     test('initPlaylist 将当前选中线路作为 Playlist 的起播 index', () async {
       final platformPlayer = _RecordingPlatformPlayer();
       final controller = _OfflineLiveRoomController(LiveSite(), platformPlayer);
@@ -512,6 +531,31 @@ class _OfflineAppSettingsController extends AppSettingsController {
   void onInit() {}
 }
 
+class _OfflineHuyaSite extends LiveSite {
+  int playRequests = 0;
+
+  @override
+  Future<LiveRoomDetail> getRoomDetail({required String roomId}) async {
+    return LiveRoomDetail(
+      roomId: roomId, title: '已下播', cover: '', userName: '测试主播',
+      userAvatar: '', online: 0, status: false,
+      data: HuyaUrlDataModel(
+        url: '', uid: '123', lines: [], bitRates: [],
+      ),
+      danmakuData: '123', url: 'https://www.huya.com/$roomId',
+    );
+  }
+
+  @override
+  Future<LivePlayUrl> getPlayUrls({
+    required LiveRoomDetail detail,
+    required LivePlayQuality quality,
+  }) async {
+    playRequests++;
+    return LivePlayUrl(urls: ['https://example.com/stale.flv']);
+  }
+}
+
 class _BlockedLiveSite extends LiveSite {
   final requested = Completer<void>();
   final response = Completer<LivePlayUrl>();
@@ -569,10 +613,11 @@ class _RecordingPlatformPlayer extends PlatformPlayer {
 }
 
 class _OfflineLiveRoomController extends LiveRoomController {
-  _OfflineLiveRoomController(LiveSite liveSite, PlatformPlayer platformPlayer)
+  _OfflineLiveRoomController(LiveSite liveSite, PlatformPlayer platformPlayer,
+      {String siteId = 'douyu'})
       : _player = Player(platformPlayer: platformPlayer),
         super(
-          pSite: Site(id: 'douyu', liveSite: liveSite, logo: '', name: '斗鱼直播'),
+          pSite: Site(id: siteId, liveSite: liveSite, logo: '', name: '测试直播'),
           pRoomId: '123',
         );
 

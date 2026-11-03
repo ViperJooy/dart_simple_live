@@ -215,9 +215,11 @@ class HuyaSite implements LiveSite {
       var url = await getPlayUrl(line, quality.data["bitRate"], urlData.uid);
       ls.add(url);
     }
+    // 部分 CDN 节点对 m3u8 列表请求按次数限流（约20次后 403），
+    // 播放器持续刷新列表会触发。FLV 长连接虽被 CDN 约 120 秒掐断，
+    // 但断流重连逻辑可恢复，作为稳定回退排在 HLS 之后。
     // 最新UA需要额外验证，此方法暂时弃用
     // var ua = await getHuYaUA();
-    // 虎牙 HLS 需要浏览器 UA，HYSDK UA 会被 CDN 限流（1秒断流）
     return LivePlayUrl(
       urls: ls,
       headers: {"user-agent": kUserAgent},
@@ -225,8 +227,13 @@ class HuyaSite implements LiveSite {
   }
 
   Future<String> getPlayUrl(HuyaLineModel line, int bitRate, String uid) async {
-    // 虎牙 FLV 长连接在正常使用下是稳定的，之前断流是 CDN 限流导致的误判。
-    // 恢复 FLV 播放，保留浏览器 UA 避免部分 CDN 节点的 UA 检测。
+    // 固定使用 FLV：
+    // - FLV 长连接虽有约 60-120 秒的服务端限制，但配合播放器
+    //   stream-lavf-o reconnect 参数可自动续流（实测 5 分钟零中断）；
+    // - HLS 列表刷新有累积次数配额（约 20 次后 403），撑不过 2 分钟，
+    //   且配额耗尽后重连也被拒，无法自动恢复，故不采用。
+    // 房间原始 HLS 域名（sHlsUrl）不能从 FLV 域名替换推导，
+    // 实测 hs-game.hls.huya.com 会返回空响应/403。
     final antiCode = processAnticode(line.flvAntiCode, uid, line.streamName);
     var url = '${line.line}/${line.streamName}.flv?$antiCode&codec=264';
     if (bitRate > 0) {
@@ -362,9 +369,12 @@ class HuyaSite implements LiveSite {
         huyaLines.add(
           HuyaLineModel(
             line: item["sFlvUrl"].toString(),
-            lineType: HuyaLineType.flv,
-            flvAntiCode: item["sFlvAntiCode"].toString(),
+            // 保存房间原始 HLS 域名（如 hs.hls.huya.com），
+            // 不能从 FLV 域名（hs-game.flv.huya.com）替换推导，会导致 403/空响应
+            hlsLine: item["sHlsUrl"]?.toString() ?? "",
             hlsAntiCode: item["sHlsAntiCode"].toString(),
+            flvAntiCode: item["sFlvAntiCode"].toString(),
+            lineType: HuyaLineType.flv,
             streamName: item["sStreamName"].toString(),
             cdnType: item["sCdnType"].toString(),
             presenterUid: roomInfo["topSid"] ?? 0,
@@ -701,6 +711,7 @@ enum HuyaLineType { flv, hls }
 
 class HuyaLineModel {
   final String line;
+  final String hlsLine; // 房间原始 HLS 域名（如 hs.hls.huya.com）
   final String cdnType;
   final String flvAntiCode;
   final String hlsAntiCode;
@@ -711,6 +722,7 @@ class HuyaLineModel {
 
   HuyaLineModel({
     required this.line,
+    this.hlsLine = "",
     required this.lineType,
     required this.flvAntiCode,
     required this.hlsAntiCode,
@@ -724,6 +736,7 @@ class HuyaLineModel {
   String toString() {
     return json.encode({
       "line": line,
+      "hlsLine": hlsLine,
       "cdnType": cdnType,
       "flvAntiCode": flvAntiCode,
       "hlsAntiCode": hlsAntiCode,
