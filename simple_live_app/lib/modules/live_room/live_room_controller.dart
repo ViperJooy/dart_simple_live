@@ -436,7 +436,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     return qualityLevel;
   }
 
-  void getPlayUrl() async {
+  Future<void> getPlayUrl() async {
     playUrls.clear();
     currentQualityInfo.value = qualites[currentQuality].quality;
     currentLineInfo.value = "";
