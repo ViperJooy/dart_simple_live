@@ -95,7 +95,9 @@ void testSite(LiveSite site) async {
 
   test('getPlayUrls', () async {
     var url = await site.getPlayUrls(
-        detail: roomDetail!, quality: playQualities.first);
+      detail: roomDetail!,
+      quality: playQualities.first,
+    );
     expect(url, isNotNull);
     expect(url.urls, isNotEmpty);
     print(url.urls.join('\n\n'));
@@ -132,6 +134,58 @@ void testSite(LiveSite site) async {
 
 void main() {
   CoreLog.requestLogType = RequestLogType.short;
+
+  test(
+    'Huya builds playback URLs from room FLV anticodes without WUP request',
+    () async {
+      final site = HuyaSite();
+      final detail = LiveRoomDetail(
+        cover: '',
+        online: 1,
+        roomId: '10188',
+        title: 'test',
+        userName: 'test',
+        userAvatar: '',
+        introduction: '',
+        notice: '',
+        status: true,
+        data: HuyaUrlDataModel(
+          url: '',
+          uid: '1234567890123',
+          lines: [
+            HuyaLineModel(
+              line: 'https://test.cdn.example',
+              lineType: HuyaLineType.flv,
+              flvAntiCode:
+                  'fm=YWJjX2RlZg%3D%3D&wsTime=67200000&fs=0&ctype=tars_mobile&t=103',
+              hlsAntiCode: '',
+              streamName: 'test_stream',
+              cdnType: 'test',
+              presenterUid: 10188,
+            ),
+          ],
+          bitRates: [HuyaBitRateModel(name: '高清', bitRate: 2000)],
+        ),
+        danmakuData: HuyaDanmakuArgs(ayyuid: 1, topSid: 1, subSid: 1),
+        url: 'https://www.huya.com/10188',
+      );
+      final quality = (await site.getPlayQualites(detail: detail)).single;
+
+      final playUrls = await site.getPlayUrls(detail: detail, quality: quality);
+
+      expect(playUrls.urls, hasLength(1));
+      final uri = Uri.parse(playUrls.urls.single);
+      expect(uri.host, 'test.cdn.example');
+      expect(uri.path, '/test_stream.flv');
+      expect(uri.queryParameters['ctype'], 'tars_mobile');
+      expect(uri.queryParameters['t'], '103');
+      expect(uri.queryParameters['ratio'], '2000');
+      expect(
+        uri.queryParameters['wsSecret'],
+        matches(RegExp(r'^[0-9a-f]{32}$')),
+      );
+    },
+  );
 
   group('bilibili tests', () {
     testSite(BiliBiliSite());

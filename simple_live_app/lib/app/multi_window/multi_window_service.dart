@@ -20,9 +20,9 @@ import 'package:window_manager/window_manager.dart';
 /// 子窗口尺寸
 /// - 抖音竖屏，其余横屏。不依赖播放状态，保证首帧即可确定。
 const _childWindowSize = {
-  'douyin': Size(480, 854),
+  'douyin': Size(540, 960),
 };
-const _defaultChildWindowSize = Size(854, 480);
+const _defaultChildWindowSize = Size(1280, 720);
 
 /// 按平台取子窗口/房间进程窗口尺寸
 Size childWindowSizeFor(String siteId) =>

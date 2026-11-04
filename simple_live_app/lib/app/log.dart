@@ -44,9 +44,10 @@ class Log {
     logFileWriter = LogFileWriter();
   }
 
-  static void disposeWriter() {
-    logFileWriter?.close();
+  static Future<void> disposeWriter() async {
+    final writer = logFileWriter;
     logFileWriter = null;
+    await writer?.close();
   }
 
   static void writeLog(content, [Level level = Level.info]) {

@@ -32,6 +32,10 @@ mixin PlayerMixin {
   late final player = Player(
     configuration: PlayerConfiguration(
       title: "Simple Live Player",
+      // Windows/macOS 上 async=true 时，同一个 Player 第二次 open 可能报
+      // Unable to load playlist，导致断流重拉后永久黑屏。同步执行 mpv 命令，
+      // 保证 open 内部命令按序完成；其他平台沿用 media_kit 默认的异步模式。
+      async: !(Platform.isWindows || Platform.isMacOS),
       logLevel: AppSettingsController.instance.logEnable.value
           ? MPVLogLevel.info
           : MPVLogLevel.error,
@@ -72,6 +76,16 @@ mixin PlayerMixin {
     if(Platform.isAndroid){
       await pp.setProperty('force-seekable', 'yes');
     }
+    // 直播流缓存优化：增大缓存应对网络波动，减少断流
+    await pp.setProperty('cache', 'yes');
+    await pp.setProperty('cache-secs', '10');
+    await pp.setProperty('demuxer-max-bytes', '50MiB');
+    await pp.setProperty('demuxer-max-back-bytes', '10MiB');
+    // ffmpeg 原生断流重连：CDN 掐断 FLV 长连接（实测约60-120秒）时，
+    // 自动重建连接继续拉流，普通房间完全无感。
+    // 热门房间会话作废导致 403 时，由上层 refreshPlayUrls 重新签名兜底。
+    await pp.setProperty('stream-lavf-o',
+        'reconnect=1,reconnect_streamed=1,reconnect_delay_max=2');
   }
 
   /// 视频控制器

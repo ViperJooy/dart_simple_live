@@ -95,7 +95,7 @@ class DouyuSite implements LiveSite {
   Future<List<LivePlayQuality>> getPlayQualites({
     required LiveRoomDetail detail,
   }) async {
-    var data = detail.data.toString();
+    var data = await _getPlaySign(detail.roomId);
     data += "&cdn=&rate=-1&ver=Douyu_223061205&iar=1&ive=1&hevc=0&fa=0";
     List<LivePlayQuality> qualities = [];
     var result = await HttpClient.instance.postJson(
@@ -135,19 +135,29 @@ class DouyuSite implements LiveSite {
     required LiveRoomDetail detail,
     required LivePlayQuality quality,
   }) async {
-    var args = detail.data.toString();
+    // 房间详情可能已缓存很久；重拉必须重新签名，不能复用进入房间时的 tt/sign。
+    var args = await _getPlaySign(detail.roomId);
     var data = quality.data as DouyuPlayData;
 
     List<String> urls = [];
     for (var item in data.cdns) {
-      var url = await getPlayUrl(detail.roomId, args, data.rate, item);
-      if (url.isNotEmpty) {
-        urls.add(url);
+      var result = await getPlayUrl(detail.roomId, args, data.rate, item);
+      if (result.isNotEmpty) {
+        // getPlayUrl 返回 "主URL|备用URL1|备用URL2"，展开成独立线路
+        // 播放器会按顺序尝试，主线断开时自动切换到备用节点
+        urls.addAll(result.split('|'));
       }
     }
     return LivePlayUrl(urls: urls);
   }
 
+  /// 获取指定 CDN 的播放地址
+  ///
+  /// 同时返回主 URL 和备用边缘节点 URL（来自 p2pMeta 的 dyxp2p_bak_edge /
+  /// dyxp2p_sug_egde）。备用节点与主节点共享同一 token，主线断开时可无缝切换，
+  /// 避免 CDN 掐断后 ffmpeg 用旧 token 重连失败（表现为卡在断流时刻）。
+  ///
+  /// 返回格式：主URL|备用URL1|备用URL2（用 | 分隔，由控制器解析）
   Future<String> getPlayUrl(
     String roomId,
     String args,
@@ -166,7 +176,39 @@ class DouyuSite implements LiveSite {
       formUrlEncoded: true,
     );
 
-    return "${result["data"]["rtmp_url"]}/${HtmlUnescape().convert(result["data"]["rtmp_live"].toString())}";
+    var data = result["data"] as Map;
+    var rtmpUrl = data["rtmp_url"].toString();
+    var rtmpLive = HtmlUnescape().convert(data["rtmp_live"].toString());
+    var mainUrl = "$rtmpUrl/$rtmpLive";
+
+    // 备用边缘节点：p2pMeta 里的 dyxp2p_bak_edge / dyxp2p_sug_egde
+    // 这些节点与主节点共享同一 token，切换时无需重新签名
+    var p2pMeta = data["p2pMeta"];
+    if (p2pMeta is Map) {
+      var bakEdge = p2pMeta["dyxp2p_bak_edge"]?.toString();
+      var sugEdge = p2pMeta["dyxp2p_sug_egde"]?.toString();
+      // 保留主 URL 的协议（http/https），备用节点复用同一协议
+      var scheme = rtmpUrl.startsWith('http://') ? 'http' : 'https';
+      var backupUrls = <String>[];
+      for (var edge in [bakEdge, sugEdge]) {
+        if (edge != null && edge.isNotEmpty) {
+          var backupUrl = rtmpUrl.replaceAll(
+            RegExp(r'https?://[^/]+'),
+            '$scheme://$edge',
+          );
+          var fullBackupUrl = "$backupUrl/$rtmpLive";
+          // 去重：备用节点可能与主线相同
+          if (fullBackupUrl != mainUrl && !backupUrls.contains(fullBackupUrl)) {
+            backupUrls.add(fullBackupUrl);
+          }
+        }
+      }
+      if (backupUrls.isNotEmpty) {
+        return "$mainUrl|${backupUrls.join('|')}";
+      }
+    }
+
+    return mainUrl;
   }
 
   @override
@@ -209,16 +251,7 @@ class DouyuSite implements LiveSite {
     );
     String? showTime = h5RoomInfo["data"]?["show_time"]?.toString();
 
-    var jsEncResult = await HttpClient.instance.getText(
-      "https://www.douyu.com/swf_api/homeH5Enc?rids=$roomId",
-      queryParameters: {},
-      header: {
-        'referer': 'https://www.douyu.com/$roomId',
-        'user-agent':
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43",
-      },
-    );
-    var crptext = json.decode(jsEncResult)["data"]["room$roomId"].toString();
+    var sign = await _getPlaySign(roomInfo["room_id"].toString());
 
     if (showTime != null && showTime.isNotEmpty) {
       try {
@@ -249,7 +282,7 @@ class DouyuSite implements LiveSite {
       notice: "",
       status: roomInfo["show_status"] == 1 && roomInfo["videoLoop"] != 1,
       danmakuData: roomInfo["room_id"].toString(),
-      data: DouyuSign.getSign(crptext, roomInfo["room_id"].toString()),
+      data: sign,
       url: "https://www.douyu.com/$roomId",
       isRecord: roomInfo["videoLoop"] == 1,
       showTime: showTime,
@@ -288,6 +321,20 @@ class DouyuSite implements LiveSite {
     }
     var hasMore = result["data"]["relateShow"].isNotEmpty;
     return LiveSearchRoomResult(hasMore: hasMore, items: items);
+  }
+
+  Future<String> _getPlaySign(String roomId) async {
+    var jsEncResult = await HttpClient.instance.getText(
+      "https://www.douyu.com/swf_api/homeH5Enc?rids=$roomId",
+      queryParameters: {},
+      header: {
+        'referer': 'https://www.douyu.com/$roomId',
+        'user-agent':
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43",
+      },
+    );
+    var script = json.decode(jsEncResult)["data"]["room$roomId"].toString();
+    return DouyuSign.getSign(script, roomId);
   }
 
   Future<Map> _getRoomInfo(String roomId) async {

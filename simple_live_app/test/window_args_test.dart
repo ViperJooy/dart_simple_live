@@ -201,7 +201,7 @@ void main() {
       final source = readController();
       // 斗鱼签名 expire=300，但 CDN 可能在签名到期前几分钟就掐断，
       // 没有冷却会导致连续 open 把播放器状态搅乱
-      expect(source, contains('_lastRetryAt'));
+      expect(source, contains('_retryCooldownTimer'));
       expect(source, contains('_retryCooldown'));
     });
 

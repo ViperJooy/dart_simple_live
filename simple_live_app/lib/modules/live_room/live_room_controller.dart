@@ -114,6 +114,19 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   var liveDuration = "00:00:00".obs;
   Timer? _liveDurationTimer;
 
+  /// 斗鱼签名地址定期刷新定时器
+  ///
+  /// 斗鱼 CDN 的 FLV 长连接会被服务端掐断（实测约 300 秒），且 token 一次性，
+  /// ffmpeg 的 reconnect 用旧 token 重连会失败。在到期前主动刷新签名，
+  /// 拿到新 token 后重新 open，避免卡在断流时刻。
+  ///
+  /// 刷新周期：280 秒（留 20 秒余量，避免刚好卡在 300 秒边界）
+  /// 仅对斗鱼生效，其他平台不启动此定时器。
+  Timer? _douyuRefreshTimer;
+
+  /// 斗鱼签名刷新周期（秒）
+  static const _douyuRefreshInterval = 280;
+
   @override
   void onInit() {
     WidgetsBinding.instance.addObserver(this);
@@ -428,19 +441,56 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     currentQualityInfo.value = qualites[currentQuality].quality;
     currentLineInfo.value = "";
     currentLineIndex = -1;
-    var playUrl = await site.liveSite
-        .getPlayUrls(detail: detail.value!, quality: qualites[currentQuality]);
-    if (playUrl.urls.isEmpty) {
-      SmartDialog.showToast("无法读取播放地址");
-      return;
+    try {
+      var playUrl = await site.liveSite.getPlayUrls(
+          detail: detail.value!, quality: qualites[currentQuality]);
+      if (playUrl.urls.isEmpty) {
+        SmartDialog.showToast("无法读取播放地址");
+        return;
+      }
+      playUrls.value = playUrl.urls;
+      playHeaders = playUrl.headers;
+      currentLineIndex = 0;
+      currentLineInfo.value = "线路${currentLineIndex + 1}";
+      //重置错误次数
+      mediaErrorRetryCount = 0;
+      initPlaylist();
+      // 斗鱼：启动定期刷新定时器，在签名到期前主动续期
+      _startDouyuRefreshTimer();
+    } catch (e, stackTrace) {
+      Log.e("获取播放地址失败：$e", stackTrace);
+      SmartDialog.showToast("获取播放地址失败，请查看日志");
     }
-    playUrls.value = playUrl.urls;
-    playHeaders = playUrl.headers;
-    currentLineIndex = 0;
-    currentLineInfo.value = "线路${currentLineIndex + 1}";
-    //重置错误次数
-    mediaErrorRetryCount = 0;
-    initPlaylist();
+  }
+
+  /// 启动斗鱼签名定期刷新定时器
+  ///
+  /// 斗鱼 CDN 的 FLV 连接约 300 秒被掐断，token 一次性。在 280 秒时主动
+  /// 重新签名并 open 新地址，避免 ffmpeg 用旧 token 重连失败。
+  /// 仅对斗鱼生效；每次刷新成功后重置定时器，形成循环。
+  /// 统一走 handleStreamStall，由它做串行化与冷却控制。
+  void _startDouyuRefreshTimer() {
+    if (site.id != "douyu") return;
+    _douyuRefreshTimer?.cancel();
+    _douyuRefreshTimer = Timer(
+      const Duration(seconds: _douyuRefreshInterval),
+      () async {
+        if (_streamRecoveryStopped || !liveStatus.value) return;
+        Log.d("斗鱼签名即将到期，主动刷新播放地址");
+        // 取消定时器，避免刷新期间重复触发；刷新成功后重启
+        _cancelDouyuRefreshTimer();
+        final refreshed = await handleStreamStall();
+        if (refreshed && !_streamRecoveryStopped && liveStatus.value) {
+          _startDouyuRefreshTimer();
+        }
+      },
+    );
+  }
+
+  /// 取消斗鱼签名定期刷新定时器
+  void _cancelDouyuRefreshTimer() {
+    _douyuRefreshTimer?.cancel();
+    _douyuRefreshTimer = null;
   }
 
   /// 切换线路
@@ -448,9 +498,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 与断流重试共用 [_refreshingPlayUrls] 这把锁：切线路同样会触发
   /// player.jump，若与重试并发会把 mpv 的 playlist 状态搅乱。
   Future<void> changePlayLine(int index) async {
-    if (_refreshingPlayUrls) {
+    if (_streamRecoveryStopped || _refreshingPlayUrls) {
       return;
     }
+    _retryPending = false;
     _refreshingPlayUrls = true;
     try {
       currentLineIndex = index;
@@ -465,8 +516,13 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 是否正在刷新播放地址（避免断流重试与缓冲看门狗并发刷新）
   var _refreshingPlayUrls = false;
 
-  /// 上次重试的时间戳，用于重试冷却
-  var _lastRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
+  /// 冷却期间的断流信号合并为一次延后重试，不再跳转回已失效的旧地址。
+  Timer? _retryCooldownTimer;
+  var _retryPending = false;
+  var _streamRecoveryStopped = false;
+
+  bool get _streamRecoveryPaused =>
+      isBackground && AppSettingsController.instance.playerAutoPause.value;
 
   /// 重试冷却时间
   ///
@@ -480,25 +536,48 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   ///
   /// 所有触发源（mediaEnd、mediaError、缓冲看门狗）都必须汇聚到这里，
   /// 由 [_refreshingPlayUrls] 串行化，并经过 [_retryCooldown] 冷却。
-  /// 返回 true 表示已经发起了一次重拉流。
+  /// 返回 true 表示已发起、合并或安排重拉流，不应再重放旧地址。
   Future<bool> handleStreamStall() async {
-    // 已有重拉流在进行中，直接忽略，避免并发 open
+    if (_streamRecoveryStopped ||
+        !liveStatus.value ||
+        detail.value == null ||
+        qualites.isEmpty) {
+      return false;
+    }
+    if (_streamRecoveryPaused) {
+      _retryPending = true;
+      return true;
+    }
     if (_refreshingPlayUrls) {
       Log.d("已有重拉流在进行，忽略本次断流信号");
-      return false;
+      return true;
     }
-    // 冷却期内不重复重拉
-    final now = DateTime.now();
-    if (now.difference(_lastRetryAt) < _retryCooldown) {
-      Log.d("重试冷却中，${_retryCooldown.inSeconds - now.difference(_lastRetryAt).inSeconds}s 后再试");
-      return false;
+    if (_retryCooldownTimer?.isActive ?? false) {
+      Log.d("重试冷却中，已安排冷却结束后重拉");
+      _retryPending = true;
+      return true;
     }
-    // 未开播 / 尚未拿到详情 / 清晰度为空时不重拉
-    if (!liveStatus.value || detail.value == null || qualites.isEmpty) {
-      return false;
+    _retryPending = false;
+    _startRetryCooldown();
+    final refreshed = await refreshPlayUrls();
+    if (!refreshed && !_streamRecoveryStopped && liveStatus.value) {
+      // EOF 后可能已没有缓冲事件；接口暂时失败也必须保留下一次恢复机会。
+      _retryPending = true;
+      if (!(_retryCooldownTimer?.isActive ?? false)) {
+        _startRetryCooldown();
+      }
     }
-    _lastRetryAt = now;
-    return refreshPlayUrls();
+    return refreshed;
+  }
+
+  void _startRetryCooldown() {
+    _retryCooldownTimer?.cancel();
+    _retryCooldownTimer = Timer(_retryCooldown, () {
+      if (_retryPending) {
+        _retryPending = false;
+        handleStreamStall();
+      }
+    });
   }
 
   /// 重新请求播放地址并刷新播放
@@ -510,17 +589,29 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 若在 open 调用前后立刻解锁，三个断流触发源会各自并发拉一次地址、
   /// 各自 open 一次，mpv 的 playlist 状态会被搅乱。
   Future<bool> refreshPlayUrls() async {
-    if (_refreshingPlayUrls) {
+    if (_streamRecoveryStopped || _refreshingPlayUrls) {
       return false;
     }
     _refreshingPlayUrls = true;
     try {
+      LiveRoomDetail currentDetail;
+      if (site.id == "huya") {
+        final ok = await _refreshHuyaDetail();
+        if (!ok) return false;
+        currentDetail = detail.value!;
+      } else {
+        currentDetail = detail.value!;
+      }
       var playUrl = await site.liveSite.getPlayUrls(
-        detail: detail.value!,
+        detail: currentDetail,
         quality: qualites[currentQuality],
       );
-      if (playUrl.urls.isEmpty) {
+      if (_streamRecoveryStopped || playUrl.urls.isEmpty) {
         return false;
+      }
+      if (_streamRecoveryPaused) {
+        _retryPending = true;
+        return true;
       }
       playUrls.value = playUrl.urls;
       playHeaders = playUrl.headers;
@@ -538,6 +629,42 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     }
   }
 
+  /// 虎牙断流时重新获取房间详情与清晰度
+  ///
+  /// 返回 false 表示已下播或需要中止刷新。
+  Future<bool> _refreshHuyaDetail() async {
+    final newDetail = await site.liveSite.getRoomDetail(roomId: roomId);
+    if (_streamRecoveryStopped) return false;
+    // 空线路可能是正常下播，不能丢弃接口明确返回的直播状态。
+    if (!newDetail.status) {
+      detail.value = newDetail;
+      liveStatus.value = false;
+      _retryPending = false;
+      _retryCooldownTimer?.cancel();
+      _bufferingWatchdog?.cancel();
+      errorMsg.value = "主播已下播";
+      return false;
+    }
+    final newData = newDetail.data as HuyaUrlDataModel;
+    // 如果新 detail 的线路为空，保留旧 detail 的线路（虎牙接口有时会返回空）
+    if (newData.lines.isNotEmpty) {
+      detail.value = newDetail;
+      // 重新获取清晰度列表，确保 qualites 和新 detail 匹配
+      final newQualites =
+          await site.liveSite.getPlayQualites(detail: newDetail);
+      if (newQualites.isNotEmpty) {
+        qualites.value = newQualites;
+        if (currentQuality >= qualites.length) {
+          currentQuality = qualites.length - 1;
+        }
+      }
+    } else {
+      // 新 detail 线路为空，沿用旧 detail，只重新生成签名
+      Log.d("虎牙房间接口返回空线路，沿用旧线路重新签名");
+    }
+    return true;
+  }
+
   Future<void> initPlaylist() async {
     currentLineInfo.value = "线路${currentLineIndex + 1}";
     errorMsg.value = "";
@@ -552,8 +679,13 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
     // 初始化播放器并设置 ao 参数
     await initializePlayer();
+    if (_streamRecoveryStopped) return;
+    if (_streamRecoveryPaused) {
+      _retryPending = true;
+      return;
+    }
 
-    await player.open(Playlist(mediaList));
+    await player.open(Playlist(mediaList, index: currentLineIndex));
   }
 
   Future<void> setPlayer() async {
@@ -565,51 +697,57 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   @override
   void mediaEnd() async {
+    // open 过程中旧流也可能发出 EOF，不得再 jump 打断正在加载的新流。
+    if (_streamRecoveryStopped || _refreshingPlayUrls) return;
     super.mediaEnd();
-    if (mediaErrorRetryCount < 2) {
+    // 虎牙断流后需要更多重试，因为 CDN 节点恢复需要时间
+    final maxRetry = site.id == "huya" ? 5 : 2;
+    if (mediaErrorRetryCount < maxRetry) {
       Log.d("播放结束，尝试第${mediaErrorRetryCount + 1}次刷新");
-      if (mediaErrorRetryCount == 1) {
+      if (mediaErrorRetryCount >= 1) {
         //延迟一秒再刷新
         await Future.delayed(const Duration(seconds: 1));
       }
       mediaErrorRetryCount += 1;
-      //统一走串行化入口，失败则重放当前地址
-      if (!await handleStreamStall()) {
-        setPlayer();
-      }
+      // 失败和冷却都由统一入口安排重试，不能重放旧地址或关闭后的播放器。
+      await handleStreamStall();
       return;
     }
 
     Log.d("播放结束");
-    // 遍历线路，如果全部链接都断开就是直播结束了
-    if (playUrls.length - 1 == currentLineIndex) {
-      liveStatus.value = false;
-    } else {
+    // 所有播放线路断开不等于主播已经下播。尤其是斗鱼签名地址到期时，
+    // 若在这里把 liveStatus 置为 false，缓冲看门狗会被永久禁用，页面一直转圈。
+    // 是否下播应以房间接口状态为准，这里保留直播状态以便继续拉取新地址。
+    if (playUrls.length - 1 != currentLineIndex) {
       changePlayLine(currentLineIndex + 1);
+    } else {
+      await handleStreamStall();
     }
   }
 
   int mediaErrorRetryCount = 0;
   @override
   void mediaError(String error) async {
+    if (_streamRecoveryStopped || _refreshingPlayUrls) return;
     super.mediaError(error);
-    if (mediaErrorRetryCount < 2) {
+    // 虎牙断流后需要更多重试，因为 CDN 节点恢复需要时间
+    final maxRetry = site.id == "huya" ? 5 : 2;
+    if (mediaErrorRetryCount < maxRetry) {
       Log.d("播放失败，尝试第${mediaErrorRetryCount + 1}次刷新");
-      if (mediaErrorRetryCount == 1) {
+      if (mediaErrorRetryCount >= 1) {
         //延迟一秒再刷新
         await Future.delayed(const Duration(seconds: 1));
       }
       mediaErrorRetryCount += 1;
-      //统一走串行化入口，失败则重放当前地址
-      if (!await handleStreamStall()) {
-        setPlayer();
-      }
+      // 失败和冷却都由统一入口安排重试，不能重放旧地址或关闭后的播放器。
+      await handleStreamStall();
       return;
     }
 
     if (playUrls.length - 1 == currentLineIndex) {
       errorMsg.value = "播放失败";
       SmartDialog.showToast("播放失败:$error");
+      await handleStreamStall();
     } else {
       changePlayLine(currentLineIndex + 1);
     }
@@ -1128,7 +1266,8 @@ ${error?.stackTrace}''');
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
 
-    if (state == AppLifecycleState.paused) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
       Log.d("进入后台");
       //进入后台，关闭弹幕
       danmakuController?.clear();
@@ -1138,6 +1277,7 @@ ${error?.stackTrace}''');
     if (state == AppLifecycleState.resumed) {
       Log.d("返回前台");
       isBackground = false;
+      if (_retryPending) handleStreamStall();
     }
   }
 
@@ -1173,13 +1313,23 @@ ${error?.stackTrace}''');
   }
 
   @override
+  void disposeStream() {
+    _streamRecoveryStopped = true;
+    _retryPending = false;
+    _retryCooldownTimer?.cancel();
+    _playingRetrySubscription?.cancel();
+    _bufferingSubscription?.cancel();
+    _bufferingWatchdog?.cancel();
+    _cancelDouyuRefreshTimer();
+    super.disposeStream();
+  }
+
+  @override
   void onClose() {
     WidgetsBinding.instance.removeObserver(this);
     scrollController.removeListener(scrollListener);
     autoExitTimer?.cancel();
-    _playingRetrySubscription?.cancel();
-    _bufferingSubscription?.cancel();
-    _bufferingWatchdog?.cancel();
+    _cancelDouyuRefreshTimer();
 
     liveDanmaku.stop();
     danmakuController = null;

@@ -11,8 +11,6 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: master
       - name: Download Android keystore
         id: android_keystore
         uses: timheuer/base64-to-file@v1.2
@@ -51,8 +49,6 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: master
       - name: Generate debug keystore for TV
         run: |
           keytool -genkeypair -v -keystore "$GITHUB_WORKSPACE/tvkey.jks" -alias tvkey \
@@ -88,8 +84,6 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: master
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -118,8 +112,6 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: master
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -146,11 +138,11 @@ jobs:
             simple_live_app/build/dist/*/*.zip
 
   build-macos:
-    runs-on: macos-latest
+    # macos-latest 是 arm64，容量紧张经常排队失败；改用 macos-13 (Intel) 更稳定
+    # Apple Silicon 可通过 Rosetta 运行 x64 版本
+    runs-on: macos-13
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: master
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -177,11 +169,11 @@ jobs:
             simple_live_app/build/dist/*/*.zip
 
   build-ios:
-    runs-on: macos-latest
+    # 与 build-macos 串行执行，避免 macOS runner 并发被取消
+    needs: build-macos
+    runs-on: macos-13
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: master
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
