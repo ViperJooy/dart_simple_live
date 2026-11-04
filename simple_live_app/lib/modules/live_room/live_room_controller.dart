@@ -745,8 +745,18 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     }
 
     if (playUrls.length - 1 == currentLineIndex) {
+      // 所有线路都失败：尝试降低清晰度（部分房间高码率流不稳定）
+      if (currentQuality > 0) {
+        Log.d("所有线路失败，尝试降低清晰度");
+        SmartDialog.showToast("当前清晰度不稳定，尝试降低清晰度");
+        currentQuality -= 1;
+        mediaErrorRetryCount = 0;
+        await getPlayUrl();
+        return;
+      }
+      // 已经是被低清晰度，给出明确提示
       errorMsg.value = "播放失败";
-      SmartDialog.showToast("播放失败:$error");
+      SmartDialog.showToast("播放失败：当前房间流不稳定，请稍后重试");
       await handleStreamStall();
     } else {
       changePlayLine(currentLineIndex + 1);

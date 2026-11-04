@@ -236,9 +236,8 @@ class HuyaSite implements LiveSite {
     // 实测 hs-game.hls.huya.com 会返回空响应/403。
     final antiCode = processAnticode(line.flvAntiCode, uid, line.streamName);
     var url = '${line.line}/${line.streamName}.flv?$antiCode&codec=264';
-    if (bitRate > 0) {
-      url += "&ratio=$bitRate";
-    }
+    // 注意：不追加 ratio 参数。部分房间（如 4K 赛事）的流文件不支持
+    // 高码率 ratio，追加后 CDN 直接返回 403。让 CDN 使用默认码率更稳定。
     return url;
   }
 
